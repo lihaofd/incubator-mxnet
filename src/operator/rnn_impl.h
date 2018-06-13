@@ -694,8 +694,8 @@ void GruForwardInference(DType* ws,
 
   DType* y_tmp = ws;
   DType* y_l = x_ptr;
-  DType* tmp_buf = y_tmp + D * T * N * H;
-  DType* ws2 = y_tmp + D * T * N * H + D * H * N;
+  DType* tmp_buf = y_tmp + 2 * D * T * N * H;
+  DType* ws2 = y_tmp + 2 * D * T * N * H + D * H * N;
 
   DType* wx_l = wx;
   DType* wh_l = wh;
@@ -706,7 +706,7 @@ void GruForwardInference(DType* ws,
   for (int l = 0; l < L; l++) {
     Tensor<cpu, 2, DType> x_l(y_l, Shape2(T * N, I));
     if ((L + l) % 2) {
-      y_l = y_ptr;
+      y_l = y_tmp + D * T * N * H;
     } else {
       y_l = y_tmp;
     }
@@ -722,6 +722,7 @@ void GruForwardInference(DType* ws,
     }
     wh_l = wx_l + I * 3 * H;
   }
+  memcpy(y_ptr, y_l, T * N * H * D * sizeof(DType));
 }
 
 

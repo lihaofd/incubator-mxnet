@@ -108,7 +108,7 @@ inline size_t GetRNNWorkspaceSize(int seq_length,
              + seq_length * batch_size * hidden_size * direction + hidden_size * seq_length * 8;
       break;
     case rnn_enum::kGru:
-      size = seq_length * batch_size * hidden_size * direction * 4 + batch_size * hidden_size * 8;
+      size = seq_length * batch_size * hidden_size * direction * 5 + batch_size * hidden_size * 8;
       break;
     default:
       LOG(FATAL) << "unknown RNN mode " << mode;
