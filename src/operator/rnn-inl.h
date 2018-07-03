@@ -284,9 +284,14 @@ void RNNForwardInference(DType* ws,
       #endif
       break;
     case rnn_enum::kGru:
-      GruForwardInference<DType>(ws, state_outputs, num_layers, direction, seq_length,
-                                 batch_size, input_size, state_size, x_ptr, hx_ptr,
-                                 w_ptr, y_ptr, hy_ptr);
+      #if MXNET_USE_MKLDNN == 1
+        MKLDNNGruForwardInference<DType>(ws, state_outputs, num_layers, direction, seq_length,
+                                         batch_size, input_size, state_size, x_ptr, hx_ptr,
+                                         w_ptr, b_ptr, y_ptr, hy_ptr);
+      #endif
+        GruForwardInference<DType>(ws, state_outputs, num_layers, direction, seq_length,
+                                   batch_size, input_size, state_size, x_ptr, hx_ptr,
+                                   w_ptr, y_ptr, hy_ptr);
       break;
     case rnn_enum::kRnnTanh:
     case rnn_enum::kRnnRelu:
