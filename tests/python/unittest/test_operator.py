@@ -41,26 +41,30 @@ def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req):
     mod2.bind(data_shapes=[('data', dshape)], label_shapes=None, inputs_need_grad=True, grad_req=grad_req)
 
     mod1.init_params()
+    #mod1.save_params('/home/hli32/1111.params')
+    #mod1.load_params('/home/hli32/1111.params')
     args, auxs = mod1.get_params()
     args = cell1.unpack_weights(args)
     args = cell2.pack_weights(args)
     mod2.set_params(args, auxs)
 
     x = mx.random.uniform(shape=dshape)
+    #x = mx.nd.ones((N, T, I))
     batch=mx.io.DataBatch(data=[x])
     # check inference
     mod1.forward(batch, is_train=False)
-    mod2.forward(batch, is_train=False)
+    mod2.forward(batch, is_train=False)   
     assert_allclose(mod1.get_outputs()[0].asnumpy(), mod2.get_outputs()[0].asnumpy(), rtol=1e-2, atol=1e-4)
-
     # check training
     mod1.forward(batch, is_train=True)
     mod2.forward(batch, is_train=True)
     assert_allclose(mod1.get_outputs()[0].asnumpy(), mod2.get_outputs()[0].asnumpy(), rtol=1e-2, atol=1e-4)
+  
 
     dy = mx.random.uniform(shape=mod1.get_outputs()[0].shape)
     mod1.backward(out_grads=[dy])
     mod2.backward(out_grads=[dy])
+    
     if grad_req != 'null':
         assert_allclose(mod1.get_input_grads()[0].asnumpy(), mod2.get_input_grads()[0].asnumpy(), rtol=1e-2, atol=1e-4)
     else:
@@ -72,12 +76,17 @@ def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req):
 @with_seed()
 def test_lstm_sym():
     T, N, I, H = 5, 32, 800, 800
-    fused = mx.rnn.FusedRNNCell(H, num_layers=3, mode='lstm', get_next_state=True, prefix='')
+    #T, N, I, H = 5, 32, 1, 8
+    fused = mx.rnn.FusedRNNCell(H, num_layers=5, mode='lstm', get_next_state=True, prefix='')
     stack = mx.rnn.SequentialRNNCell()
     stack.add(mx.rnn.LSTMCell(H, prefix='l0_'))
+    
     stack.add(mx.rnn.LSTMCell(H, prefix='l1_'))
+    
     stack.add(mx.rnn.LSTMCell(H, prefix='l2_'))
-
+    stack.add(mx.rnn.LSTMCell(H, prefix='l3_'))
+    stack.add(mx.rnn.LSTMCell(H, prefix='l4_'))
+    
     check_rnn_consistency(fused, stack, T, N, I, H, 'write')
     check_rnn_consistency(fused, stack, T, N, I, H, 'add')
     check_rnn_consistency(fused, stack, T, N, I, H, 'null')
@@ -85,7 +94,8 @@ def test_lstm_sym():
 @with_seed()
 def test_lstm_bidirectional():
     T, N, I, H = 5, 20, 800, 800
-    fused = mx.rnn.FusedRNNCell(H, num_layers=2, mode='lstm',
+    T, N, I, H = 1, 1, 1, 1
+    fused = mx.rnn.FusedRNNCell(H, num_layers=3, mode='lstm',
                                 bidirectional=True, get_next_state=True, prefix='')
 
     stack = mx.rnn.SequentialRNNCell()
@@ -93,11 +103,26 @@ def test_lstm_bidirectional():
                 mx.rnn.LSTMCell(H, prefix='l0_'),
                 mx.rnn.LSTMCell(H, prefix='r0_'),
                 output_prefix='bi_lstm_0_'))
+    
     stack.add(mx.rnn.BidirectionalCell(
                 mx.rnn.LSTMCell(H, prefix='l1_'),
                 mx.rnn.LSTMCell(H, prefix='r1_'),
                 output_prefix='bi_lstm_1_'))
-
+    
+    stack.add(mx.rnn.BidirectionalCell(
+                mx.rnn.LSTMCell(H, prefix='l2_'),
+                mx.rnn.LSTMCell(H, prefix='r2_'),
+                output_prefix='bi_lstm_2_'))
+    '''
+    stack.add(mx.rnn.BidirectionalCell(
+                mx.rnn.LSTMCell(H, prefix='l3_'),
+                mx.rnn.LSTMCell(H, prefix='r3_'),
+                output_prefix='bi_lstm_3_'))
+    stack.add(mx.rnn.BidirectionalCell(
+                mx.rnn.LSTMCell(H, prefix='l4_'),
+                mx.rnn.LSTMCell(H, prefix='r4_'),
+                output_prefix='bi_lstm_4_'))
+    '''
     check_rnn_consistency(fused, stack, T, N, I, H, 'write')
     check_rnn_consistency(fused, stack, T, N, I, H, 'add')
     check_rnn_consistency(fused, stack, T, N, I, H, 'null')
@@ -105,11 +130,13 @@ def test_lstm_bidirectional():
 @with_seed()
 def test_gru_sym():
     T, N, I, H = 5, 32, 800, 800
-    fused = mx.rnn.FusedRNNCell(H, num_layers=3, mode='gru', get_next_state=True, prefix='')
+    fused = mx.rnn.FusedRNNCell(H, num_layers=5, mode='gru', get_next_state=True, prefix='')
     stack = mx.rnn.SequentialRNNCell()
     stack.add(mx.rnn.GRUCell(H, prefix='l0_'))
     stack.add(mx.rnn.GRUCell(H, prefix='l1_'))
     stack.add(mx.rnn.GRUCell(H, prefix='l2_'))
+    stack.add(mx.rnn.GRUCell(H, prefix='l3_'))
+    stack.add(mx.rnn.GRUCell(H, prefix='l4_'))
 
     check_rnn_consistency(fused, stack, T, N, I, H, 'write')
     check_rnn_consistency(fused, stack, T, N, I, H, 'add')
@@ -119,7 +146,7 @@ def test_gru_sym():
 def test_gru_bidirectional():
     T, N, I, H = 5, 20, 800, 800
 
-    fused = mx.rnn.FusedRNNCell(H, num_layers=2, mode='gru',
+    fused = mx.rnn.FusedRNNCell(H, num_layers=5, mode='gru',
                                 bidirectional=True, get_next_state=True, prefix='')
 
     stack = mx.rnn.SequentialRNNCell()
@@ -132,7 +159,21 @@ def test_gru_bidirectional():
                 mx.rnn.GRUCell(H, prefix='l1_'),
                 mx.rnn.GRUCell(H, prefix='r1_'),
                 output_prefix='bi_gru_1_'))
+    
+    stack.add(mx.rnn.BidirectionalCell(
+                mx.rnn.GRUCell(H, prefix='l2_'),
+                mx.rnn.GRUCell(H, prefix='r2_'),
+                output_prefix='bi_gru_2_'))
+    stack.add(mx.rnn.BidirectionalCell(
+                mx.rnn.GRUCell(H, prefix='l3_'),
+                mx.rnn.GRUCell(H, prefix='r3_'),
+                output_prefix='bi_gru_3_'))
 
+    stack.add(mx.rnn.BidirectionalCell(
+                mx.rnn.GRUCell(H, prefix='l4_'),
+                mx.rnn.GRUCell(H, prefix='r4_'),
+                output_prefix='bi_gru_4_'))
+    
     check_rnn_consistency(fused, stack, T, N, I, H, 'write')
     check_rnn_consistency(fused, stack, T, N, I, H, 'add')
     check_rnn_consistency(fused, stack, T, N, I, H, 'null')
@@ -188,7 +229,7 @@ def test_rnnrelu_sym():
 
 @with_seed()
 def test_rnnrelu_bidirectional():
-    T, N, I, H = 5, 20, 200, 200
+    T, N, I, H = 5, 20, 800, 800
 
     fused = mx.rnn.FusedRNNCell(H, num_layers=2, mode='rnn_relu',
                                 bidirectional=True, get_next_state=True, prefix='')
@@ -204,8 +245,8 @@ def test_rnnrelu_bidirectional():
                 output_prefix='bi_rnnrelu_1_'))
 
     check_rnn_consistency(fused, stack, T, N, I, H, 'write')
-    check_rnn_consistency(fused, stack, T, N, I, H, 'add')
-    check_rnn_consistency(fused, stack, T, N, I, H, 'null')
+    #check_rnn_consistency(fused, stack, T, N, I, H, 'add')
+    #check_rnn_consistency(fused, stack, T, N, I, H, 'null')
 
 @with_seed()
 def test_lstm_dropout():
@@ -6427,5 +6468,8 @@ def test_op_roi_align():
 
 
 if __name__ == '__main__':
+    #test_lstm_sym()
+    #test_lstm_bidirectional()
+    #test_rnnrelu_bidirectional()
     import nose
     nose.runmodule()
