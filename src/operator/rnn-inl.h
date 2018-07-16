@@ -275,7 +275,7 @@ void RNNForwardInference(DType* ws,
                                   w_ptr, b_ptr, y_ptr, hy_ptr, cy_ptr);
       break;
     case rnn_enum::kGru:
-      GruForwardInference<DType>(ws, state_outputs, num_layers, direction, seq_length,
+      GruForwardInference_int8<DType>(ws, state_outputs, num_layers, direction, seq_length,
                                  batch_size, input_size, state_size, x_ptr, hx_ptr,
                                  w_ptr, y_ptr, hy_ptr);
       break;
