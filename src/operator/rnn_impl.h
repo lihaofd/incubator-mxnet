@@ -714,6 +714,7 @@ void GruForwardInferenceSingleLayer_int8(DType* ws,
       x_int8[i * I + j] = (MKL_INT8)(x[i][j] * factor_x + foffset);
     }
   }
+
   // scale wx
   #pragma omp parallel for num_threads(omp_threads)
   for (int i = 0; i < 3 * H; ++i) {    
