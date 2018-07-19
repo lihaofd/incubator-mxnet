@@ -26,7 +26,7 @@ from mxnet.test_utils import *
 from mxnet.base import py_str
 import unittest
 
-def check_rnn_consistency(cell1, T, N, I, H):
+def check_rnn_consistency_int8(cell1, cell2, T, N, I, H):
     xpu = mx.cpu()
     warmup = 3
     runtimes = 10
@@ -38,17 +38,21 @@ def check_rnn_consistency(cell1, T, N, I, H):
     mod1 = mx.mod.Module(Y1, label_names=None, context=xpu)
     mod1.bind(data_shapes=[('data', dshape)], label_shapes=None, inputs_need_grad=True)
 
+    Y2, _ = cell2.unroll(T, data, layout='NTC', merge_outputs=True)
+    mod2 = mx.mod.Module(Y2, label_names=None, context=xpu)
+    mod2.bind(data_shapes=[('data', dshape)], label_shapes=None, inputs_need_grad=True)
+
     mod1.init_params()
-    #mod1.init_params(initializer=mx.init.Normal(2))
+    args, auxs = mod1.get_params()
+    args = cell1.unpack_weights(args)
+    args = cell2.pack_weights(args)
+    mod2.set_params(args, auxs)
  
     x = mx.random.uniform(shape=dshape)
-    dy = mx.random.uniform(shape=(N, T, H))
     
     batch=mx.io.DataBatch(data=[x])
-    fpa = open("out.txt", "w")
-    
     # check inference
-    
+    fpa = open("out.txt", "w")
     for k in range(0 , warmup):        
         mod1.forward(batch, is_train=False)
         print >> fpa, mod1.get_outputs()[0][0][0][0]
@@ -60,18 +64,31 @@ def check_rnn_consistency(cell1, T, N, I, H):
 
     print ("-- use time %.8s seconds for %d Intelrnn infer---\n" % (time.time()-startTime, runtimes))
 
+    for k in range(0 , warmup):        
+        mod2.forward(batch, is_train=False)
+        print >> fpa, mod1.get_outputs()[0][0][0][0]
+ 
+    startTime = time.time()
+    for k in range(0 , runtimes):        
+        mod2.forward(batch, is_train=False)
+        print >> fpa, mod2.get_outputs()[0][0][0][0]
+
+    print ("-- use time %.8s seconds for %d grucell infer---\n" % (time.time()-startTime, runtimes))
+
 def test_multiplegru():
     T, N, I, H = 300, 20, 800, 800
     fused = mx.rnn.FusedRNNCell(H, num_layers=5, mode='gru', get_next_state=True, prefix='')
-    check_rnn_consistency(fused, T, N, I, H)
+    stack = mx.rnn.SequentialRNNCell()
+    stack.add(mx.rnn.GRUCell(H, prefix='l0_'))
+    stack.add(mx.rnn.GRUCell(H, prefix='l1_'))
+    
+    stack.add(mx.rnn.GRUCell(H, prefix='l2_'))
+    stack.add(mx.rnn.GRUCell(H, prefix='l3_'))
+    stack.add(mx.rnn.GRUCell(H, prefix='l4_'))
+    
+    check_rnn_consistency_int8(fused, stack, T, N, I, H)
 
-def test_multiplegru_bi():
-    T, N, I, H = 300, 20, 800, 800
-    fused = mx.rnn.FusedRNNCell(H, num_layers=5, mode='gru',
-                                bidirectional=True, get_next_state=True, prefix='')
 
-    check_rnn_consistency(fused, T, N, I, H)
 
 if __name__ == '__main__':
-  test_multiplegru()
-  test_multiplegru_bi()
+    test_multiplegru()
