@@ -1095,7 +1095,6 @@ void GruForwardInferenceSingleLayer(DType* ws,
           (reinterpret_cast<DType*>(tmp_buf), Shape3(D, H, N));
       dback_ht_1_tmp = reshape(dback_ht_1.T(), Shape3(D, H, N));
       linalg_gemm(dback_ht_1_tmp[1], back_wh, dgemmC2, alpha, beta, true, true);
-
       #pragma omp parallel for num_threads(omp_threads)
       for (int i = 0; i < N; ++i) {
         for (int j = 0; j < H; ++j) {

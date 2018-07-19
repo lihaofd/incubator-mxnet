@@ -35,11 +35,11 @@ def check_rnn_consistency2(cell1, cell2, T, N, I, H, grad_req):
 
     Y1, _ = cell1.unroll(T, data, layout='NTC', merge_outputs=True)
     mod1 = mx.mod.Module(Y1, label_names=None, context=default_context())
-    mod1.bind(data_shapes=[('data', dshape)], label_shapes=None, inputs_need_grad=True, grad_req=grad_req)
+    mod1.bind(data_shapes=[('data', dshape, np.float64)], label_shapes=None, inputs_need_grad=True, grad_req=grad_req)
 
     Y2, _ = cell2.unroll(T, data, layout='NTC', merge_outputs=True)
     mod2 = mx.mod.Module(Y2, label_names=None, context=default_context())
-    mod2.bind(data_shapes=[('data', dshape)], label_shapes=None, inputs_need_grad=True, grad_req=grad_req)
+    mod2.bind(data_shapes=[('data', dshape, np.float64)], label_shapes=None, inputs_need_grad=True, grad_req=grad_req)
 
     mod1.init_params()
     args, auxs = mod1.get_params()
@@ -55,10 +55,10 @@ def check_rnn_consistency2(cell1, cell2, T, N, I, H, grad_req):
     # check inference
     mod1.forward(batch, is_train=False)
     mod2.forward(batch, is_train=False)
-    assert_allclose(mod1.get_outputs()[0].asnumpy(), mod2.get_outputs()[0].asnumpy(), rtol=1e-2, atol=1e-2)
+    assert_allclose(mod1.get_outputs()[0].asnumpy(), mod2.get_outputs()[0].asnumpy(), rtol=1e-2, atol=1e-4)
 
     # check training
-    '''
+    
     mod1.forward(batch, is_train=True)
     mod2.forward(batch, is_train=True)   
     
@@ -73,7 +73,7 @@ def check_rnn_consistency2(cell1, cell2, T, N, I, H, grad_req):
     else:
         assert(mod1.get_input_grads()[0] == None)
         assert(mod2.get_input_grads()[0] == None)
-    '''
+    
 
 def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req):
     dshape = (N, T, I)
@@ -87,7 +87,6 @@ def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req):
     mod2 = mx.mod.Module(Y2, label_names=None, context=default_context())
     mod2.bind(data_shapes=[('data', dshape)], label_shapes=None, inputs_need_grad=True, grad_req=grad_req)
 
-    #mod1.init_params(initializer=mx.init.Normal(2))
     mod1.init_params()
     args, auxs = mod1.get_params()
     args = cell1.unpack_weights(args)
@@ -102,7 +101,6 @@ def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req):
     assert_allclose(mod1.get_outputs()[0].asnumpy(), mod2.get_outputs()[0].asnumpy(), rtol=1e-2, atol=1e-2)
 
     # check training
-    '''
     mod1.forward(batch, is_train=True)
     mod2.forward(batch, is_train=True)    
     assert_allclose(mod1.get_outputs()[0].asnumpy(), mod2.get_outputs()[0].asnumpy(), rtol=1e-2, atol=1e-4)
@@ -116,8 +114,46 @@ def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req):
     else:
         assert(mod1.get_input_grads()[0] == None)
         assert(mod2.get_input_grads()[0] == None)
-    '''
 
+def check_rnn_consistency_int8(cell1, cell2, T, N, I, H, grad_req):
+    dshape = (N, T, I)
+    data = mx.sym.Variable('data')
+
+    Y1, _ = cell1.unroll(T, data, layout='NTC', merge_outputs=True)
+    mod1 = mx.mod.Module(Y1, label_names=None, context=default_context())
+    mod1.bind(data_shapes=[('data', dshape)], label_shapes=None, inputs_need_grad=True, grad_req=grad_req)
+
+    Y2, _ = cell2.unroll(T, data, layout='NTC', merge_outputs=True)
+    mod2 = mx.mod.Module(Y2, label_names=None, context=default_context())
+    mod2.bind(data_shapes=[('data', dshape)], label_shapes=None, inputs_need_grad=True, grad_req=grad_req)
+
+    mod1.init_params()
+    args, auxs = mod1.get_params()
+    args = cell1.unpack_weights(args)
+    args = cell2.pack_weights(args)
+    mod2.set_params(args, auxs)
+
+    x = mx.random.uniform(shape=dshape)
+    batch=mx.io.DataBatch(data=[x])
+    # check inference
+    mod1.forward(batch, is_train=False)
+    mod2.forward(batch, is_train=False)
+    assert_allclose(mod1.get_outputs()[0].asnumpy(), mod2.get_outputs()[0].asnumpy(), rtol=1e-2, atol=1e-2)
+
+
+@with_seed()
+def test_gru_int8_infer():
+    T, N, I, H = 5, 32, 800, 800
+    fused = mx.rnn.FusedRNNCell(H, num_layers=5, mode='gru', get_next_state=True, prefix='')
+    stack = mx.rnn.SequentialRNNCell()
+    stack.add(mx.rnn.GRUCell(H, prefix='l0_'))
+    stack.add(mx.rnn.GRUCell(H, prefix='l1_'))
+    stack.add(mx.rnn.GRUCell(H, prefix='l2_'))
+    stack.add(mx.rnn.GRUCell(H, prefix='l3_'))
+    stack.add(mx.rnn.GRUCell(H, prefix='l4_'))
+    
+    check_rnn_consistency_int8(fused, stack, T, N, I, H, 'write')
+    
 @with_seed()
 def test_lstm_sym():
     T, N, I, H = 5, 32, 800, 800
