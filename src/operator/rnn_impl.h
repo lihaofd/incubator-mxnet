@@ -26,11 +26,11 @@
 #ifndef MXNET_OPERATOR_RNN_IMPL_H_
 #define MXNET_OPERATOR_RNN_IMPL_H_
 
+#include <mkl.h>
 #include <dmlc/logging.h>
 #include <dmlc/parameter.h>
 #include <mxnet/operator.h>
 #include <algorithm>
-#include <mkl.h>
 #include <map>
 #include <vector>
 #include <string>
@@ -60,9 +60,7 @@ inline DType getmax(DType* x, size_t size) {
   float min = x[0];
   float max = x[0];
   float ret = 1.0f;
-  const int omp_threads = mxnet::engine::OpenMP::Get()->GetRecommendedOMPThreadCount();
   if (size > 1) {
-    #pragma omp parallel for num_threads(omp_threads)
     for (size_t i = 1; i < size; i++) {
       if (x[i] > max) {
         max = x[i];
@@ -74,7 +72,7 @@ inline DType getmax(DType* x, size_t size) {
   }
   if (fabs(max) > fabs(min)) {
     ret = fabs(max) == 0.0f ? 1.0f : fabs(max);
-  } else  {
+  } else {
     ret = fabs(min) == 0.0f ? 1.0f : fabs(min);
   }
   return ret;
@@ -619,8 +617,8 @@ void GruForwardInferenceSingleLayer_int8(DType* ws,
                                          const int N,
                                          const int I,
                                          const int H,
-                                         Tensor<cpu, 2, DType> &x,
-                                         Tensor<cpu, 2, DType> &hx,
+                                         const Tensor<cpu, 2, DType> &x,
+                                         const Tensor<cpu, 2, DType> &hx,
                                          DType* wx_ptr,
                                          DType* wh_ptr,
                                          DType* bx_ptr,
@@ -642,7 +640,6 @@ void GruForwardInferenceSingleLayer_int8(DType* ws,
   DType* back_bh_ptr = (bh_ptr != NULL)? bh_ptr + 3 * H * 2: NULL;
   DType* back_gemmC1 = gemmC1 + T * N * 3 * H;
   DType* gemmC1_t = gemmC1;
-
   Tensor<cpu, 2, DType> wx(wx_ptr, Shape2(H * 3, I));
   Tensor<cpu, 2, DType> wh(wh_ptr, Shape2(H * 3, H));
   Tensor<cpu, 2, DType> bx(bx_ptr, Shape2(3, H));
@@ -674,64 +671,118 @@ void GruForwardInferenceSingleLayer_int8(DType* ws,
   cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, N * T, 3 * H, I, alpha,
     reinterpret_cast<float *>(x.dptr_), I, reinterpret_cast<float *>(wx_ptr),
     I, beta, reinterpret_cast<float *>(gemmC1), 3 * H);
+
+  for(int i = 0; i < 5; i++) {
+    LOG(INFO) << "gemmC1[" << i << "]" << gemmC1[i];
+  }
 */
-  CBLAS_OFFSET offsetc = CblasFixOffset;
+
+/*
+  for(int i = 0; i < T * N; i++) {
+    for(int j = 0; j < I; j++) {
+      LOG(INFO) << "x[" << i << "][" << j << "]:" << x[i][j];
+    }
+  }
+
+  for(int i = 0; i < 3 * H; i++) {
+    for(int j = 0; j < I; j++) {
+      LOG(INFO) << "wx[" << i << "][" << j << "]:" << wx[i][j];
+    }
+  }
+
+  for(int i = 0; i < 3 * H; i++) {
+    for(int j = 0; j < H; j++) {
+      LOG(INFO) << "wh[" << i << "][" << j << "]:" << wh[i][j];
+    }
+  }
+*/
   MKL_INT  ao = 0, bo = 0;
-  MKL_INT32  co = 0;
-  float factor_x = 255 / getmax(x.dptr_, T * N * I);
+  float factor_x = 63 / getmax(x.dptr_, T * N * I);
   float factor_wx = 127 / getmax(wx.dptr_, 3 * H * I);
   float factor_wh = 127 / getmax(wh.dptr_, 3 * H * H);
   float factor_backwx = 1.0f;
-  float factor_backwh = 1.0f;  
+  float factor_backwh = 1.0f;
   if (D == 2) {
     factor_backwx = 127 / getmax(back_wx.dptr_, 3 * H * I);
-    factor_backwh = 127 / getmax(back_wh.dptr_, 3 * H * H);  
+    factor_backwh = 127 / getmax(back_wh.dptr_, 3 * H * H);
   }
 
-  MKL_INT8* x_int8 = (MKL_INT8 *) mkl_calloc(T * N * I, sizeof(MKL_INT8), 64);  
-  MKL_INT8* wx_int8 = (MKL_INT8 *) mkl_calloc(3 * H * I, sizeof(MKL_INT8), 64);
-  MKL_INT8* wh_int8 = (MKL_INT8 *) mkl_calloc(3 * H * H, sizeof(MKL_INT8), 64);
-  MKL_INT8* ht_1_int8 = (MKL_INT8 *) mkl_calloc(N * D * H, sizeof(MKL_INT8), 64);
+  MKL_INT8* x_int8 = reinterpret_cast<MKL_INT8* > (mkl_calloc(T * N * I, sizeof(MKL_INT8), 64));
+  MKL_INT8* wx_int8 = reinterpret_cast<MKL_INT8* > (mkl_calloc(3 * H * I, sizeof(MKL_INT8), 64));
+  MKL_INT8* wh_int8 = reinterpret_cast<MKL_INT8* > (mkl_calloc(3 * H * H, sizeof(MKL_INT8), 64));
+  MKL_INT32* wx_sum_int8 = reinterpret_cast<MKL_INT32* > (mkl_calloc(3 * H, sizeof(MKL_INT32), 64));
+  MKL_INT32* wh_sum_int8 = reinterpret_cast<MKL_INT32* > (mkl_calloc(3 * H, sizeof(MKL_INT32), 64));
+  MKL_INT8* ht_1_int8 = reinterpret_cast<MKL_INT8* > (mkl_calloc(N * D * H, sizeof(MKL_INT8), 64));
+  MKL_INT32* gemmC1_int8 = reinterpret_cast<MKL_INT32* >
+      (mkl_calloc(T * N * 3 * H, sizeof(MKL_INT32), 64));
+  MKL_INT32* gemmC2_int8 = reinterpret_cast<MKL_INT32* >
+      (mkl_calloc(N * 3 * H, sizeof(MKL_INT32), 64));
   MKL_INT8* back_wx_int8;
   MKL_INT8* back_wh_int8;
+  MKL_INT32* back_wx_sum_int8;
+  MKL_INT32* back_wh_sum_int8;
   MKL_INT32* back_gemmC1_int8;
   MKL_INT8* back_ht_1_int8;
   float foffset = 0.5;
   if (D == 2) {
-    back_wx_int8 = (MKL_INT8 *) mkl_calloc(3 * H * I, sizeof(MKL_INT8), 64);
-    back_wh_int8 = (MKL_INT8 *) mkl_calloc(3 * H * H, sizeof(MKL_INT8), 64);
-    back_gemmC1_int8 = (MKL_INT32 *) mkl_calloc(T * N * 3 * H, sizeof(MKL_INT32), 64);
-    back_ht_1_int8 = (MKL_INT8 *) mkl_calloc(N * D * H, sizeof(MKL_INT8), 64);
+    back_wx_int8 = reinterpret_cast<MKL_INT8* > (mkl_calloc(3 * H * I, sizeof(MKL_INT8), 64));
+    back_wh_int8 = reinterpret_cast<MKL_INT8* > (mkl_calloc(3 * H * H, sizeof(MKL_INT8), 64));
+    back_wx_sum_int8 = reinterpret_cast<MKL_INT32* >
+        (mkl_calloc(3 * H, sizeof(MKL_INT32), 64));
+    back_wh_sum_int8 = reinterpret_cast<MKL_INT32* >
+        (mkl_calloc(3 * H, sizeof(MKL_INT32), 64));
+    back_gemmC1_int8 = reinterpret_cast<MKL_INT32* >
+        (mkl_calloc(T * N * 3 * H, sizeof(MKL_INT32), 64));
+    back_ht_1_int8 = reinterpret_cast<MKL_INT8* > (mkl_calloc(N * D * H, sizeof(MKL_INT8), 64));
   }
-
-  MKL_INT32* gemmC1_int8 = (MKL_INT32 *) mkl_calloc(T * N * 3 * H, sizeof(MKL_INT32), 64);
-  MKL_INT32* gemmC2_int8 = (MKL_INT32 *) mkl_calloc(N * 3 * H, sizeof(MKL_INT32), 64);
 
   // scale x
   #pragma omp parallel for num_threads(omp_threads)
-  for (int i = 0; i < T * N; ++i) {    
+  for (int i = 0; i < T * N; ++i) {
     for (int j = 0; j < I; ++j) {
-      x_int8[i * I + j] = (MKL_INT8)(x[i][j] * factor_x + foffset);
+      if (x[i][j] > 0) {
+        foffset = 0.5;
+      } else if (x[i][j]  == 0) {
+        foffset = 0.0;
+      } else {
+        foffset = -0.5;
+      }
+      x_int8[i * I + j] = (MKL_INT8) (x[i][j] * factor_x + foffset) + 64;  //  ensure x >= 0
     }
   }
-
   // scale wx
   #pragma omp parallel for num_threads(omp_threads)
-  for (int i = 0; i < 3 * H; ++i) {    
+  for (int i = 0; i < 3 * H; ++i) {
     for (int j = 0; j < I; ++j) {
+      if (wx[i][j] > 0) {
+        foffset = 0.5;
+      } else if (wx[i][j]  == 0) {
+        foffset = 0.0;
+      } else {
+        foffset = -0.5;
+      }
       wx_int8[i * I + j] = (MKL_INT8)(wx[i][j] * factor_wx + foffset);
     }
   }
 
-  cblas_gemm_s8u8s32(CblasRowMajor, CblasNoTrans, CblasTrans, offsetc,
+  //  prepare sum data for wx
+  #pragma omp parallel for num_threads(omp_threads)
+  for (int i = 0; i < 3 * H; ++i) {
+    wx_sum_int8[i] = 0;
+    for (int j = 0; j < I; ++j) {
+      wx_sum_int8[i] += (-64) * wx_int8[i * I + j];
+    }
+  }
+
+  cblas_gemm_s8u8s32(CblasRowMajor, CblasNoTrans, CblasTrans, CblasRowOffset,
       N * T, 3 * H, I, alpha, x_int8, I, ao, wx_int8, I, bo, beta,
-      gemmC1_int8, 3 * H, &co);
+      gemmC1_int8, 3 * H, wx_sum_int8);
 
   // scale back gemmC1
   #pragma omp parallel for num_threads(omp_threads)
-  for (int i = 0; i < T * N; ++i) {    
+  for (int i = 0; i < T * N; ++i) {
     for (int j = 0; j < 3 * H; ++j) {
-      gemmC1[i * 3 * H + j] = gemmC1_int8[i * 3 * H + j] / (factor_x * factor_wx); //  float
+      gemmC1[i * 3 * H + j] = gemmC1_int8[i * 3 * H + j] / (factor_x * factor_wx);  //  float
     }
   }
 
@@ -741,22 +792,36 @@ void GruForwardInferenceSingleLayer_int8(DType* ws,
       reinterpret_cast<float *>(x.dptr_), I, reinterpret_cast<float *>(back_wx_ptr),
       I, beta, reinterpret_cast<float *>(back_gemmC1), 3 * H); 
 */
-
-    // scale back_wx
+    //  scale back_wx
     #pragma omp parallel for num_threads(omp_threads)
-    for (int i = 0; i < 3 * H; ++i) {    
+    for (int i = 0; i < 3 * H; ++i) {
       for (int j = 0; j < I; ++j) {
-        back_wx_int8[i * I + j] = (MKL_INT8)(back_wx[i][j] * factor_backwx  + foffset);
+        if (back_wx[i][j] > 0) {
+          foffset = 0.5;
+        } else if (back_wx[i][j]  == 0) {
+          foffset = 0.0;
+        } else {
+          foffset = -0.5;
+        }
+        back_wx_int8[i * I + j] = (MKL_INT8)(back_wx[i][j] * factor_backwx + foffset);
       }
     }
 
-    cblas_gemm_s8u8s32(CblasRowMajor,CblasNoTrans, CblasTrans, offsetc, 
+    //  prepare sum data for back_wx
+    #pragma omp parallel for num_threads(omp_threads)
+    for (int i = 0; i < 3 * H; ++i) {
+      back_wx_sum_int8[i] = 0;
+      for (int j = 0; j < I; ++j) {
+        back_wx_sum_int8[i] += (-64) * back_wx_int8[i * I + j];
+      }
+    }
+    cblas_gemm_s8u8s32(CblasRowMajor, CblasNoTrans, CblasTrans, CblasRowOffset,
         N * T, 3 * H, I, alpha, x_int8, I, ao, back_wx_int8, I, bo, beta,
-        back_gemmC1_int8, 3 * H, &co);
+        back_gemmC1_int8, 3 * H, back_wx_sum_int8);
 
     // scale back back_gemmC1
     #pragma omp parallel for num_threads(omp_threads)
-    for (int i = 0; i < T * N; ++i) {    
+    for (int i = 0; i < T * N; ++i) {
       for (int j = 0; j < 3 * H; ++j) {
         back_gemmC1[i * 3 * H + j] = back_gemmC1_int8[i * 3 * H + j] / (factor_x * factor_backwx);
       }
@@ -765,21 +830,54 @@ void GruForwardInferenceSingleLayer_int8(DType* ws,
 
   // scale wh
   #pragma omp parallel for num_threads(omp_threads)
-  for (int i = 0; i < 3 * H; ++i) {    
+  for (int i = 0; i < 3 * H; ++i) {
     for (int j = 0; j < H; ++j) {
+      if (wh[i][j] > 0) {
+        foffset = 0.5;
+      } else if (wh[i][j]  == 0) {
+        foffset = 0.0;
+      } else {
+        foffset = -0.5;
+      }
       wh_int8[i * H + j] = (MKL_INT8)(wh[i][j] * factor_wh + foffset);
+    }
+  }
+
+  //  prepare sum data for wh
+  #pragma omp parallel for num_threads(omp_threads)
+  for (int i = 0; i < 3 * H; ++i) {
+    wh_sum_int8[i] = 0;
+    for (int j = 0; j < H; ++j) {
+      wh_sum_int8[i] += (-64) * wh_int8[i * H + j];
     }
   }
 
   // scale back_wh
   if (D == 2) {
     #pragma omp parallel for num_threads(omp_threads)
-    for (int i = 0; i < 3 * H; ++i) {    
+    for (int i = 0; i < 3 * H; ++i) {
       for (int j = 0; j < H; ++j) {
-        back_wh_int8[i * H + j] = (MKL_INT8)(back_wh[i][j] * factor_backwh);
+        if (back_wh[i][j] > 0) {
+          foffset = 0.5;
+        } else if (back_wh[i][j]  == 0) {
+          foffset = 0.0;
+        } else {
+          foffset = -0.5;
+        }
+        back_wh_int8[i * H + j] = (MKL_INT8)(back_wh[i][j] * factor_backwh + foffset);
+      }
+    }
+
+    //  prepare sum data for back_wh
+    #pragma omp parallel for num_threads(omp_threads)
+    for (int i = 0; i < 3 * H; ++i) {
+      back_wh_sum_int8[i] = 0;
+      for (int j = 0; j < H; ++j) {
+        back_wh_sum_int8[i] += (-64) * back_wh_int8[i * H + j];
       }
     }
   }
+
 
   for (int t = 0; t < T; t++) {
     //  perform the first direction, X * wx and H * wh for each step
@@ -788,39 +886,55 @@ void GruForwardInferenceSingleLayer_int8(DType* ws,
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, N, 3 * H, H, alpha, 
       reinterpret_cast<float *>(ht_1), D * H, 
       reinterpret_cast<float *>(wh_ptr), H, beta,
-      reinterpret_cast<float *>(gemmC2), 3 * H);
+      reinterpret_cast<float *>(gemmC2), 3 * H);   
+
+    for(int i = 0; i < 5; i++) {
+      LOG(INFO) << "gemmC2[" << i << "]" << gemmC2[i];
+    }
 */
-     // scale ht_1
-    
+    // scale ht_1
     float factor_ht_1 = 1.0;
     if (D == 1) {
-      factor_ht_1 = 255 / getmax(ht_1, N * D * H);
+      factor_ht_1 = 63 / getmax(ht_1, N * D * H);
     } else {
       Tensor<cpu, 2, DType> dht_1(ht_1, Shape2(N, D * H));
       Tensor<cpu, 3, DType> dht_1_tmp = Tensor<cpu, 3, DType>(reinterpret_cast<DType*>(tmp_buf),
                                         Shape3(D, H, N));
       dht_1_tmp = reshape(dht_1.T(), Shape3(D, H, N));
-      factor_ht_1 = 255 / getmax(dht_1_tmp[0].dptr_, H * N);
+      factor_ht_1 = 63 / getmax(dht_1_tmp[0].dptr_, H * N);
     }
     #pragma omp parallel for num_threads(omp_threads)
-    for (int i = 0; i < N; ++i) {    
+    for (int i = 0; i < N; ++i) {
       for (int j = 0; j < D * H; ++j) {
-        ht_1_int8[i * D * H + j] = (MKL_INT8)(ht_1[i * D * H + j] * factor_ht_1 + foffset);
+        if (ht_1[i * D * H + j] > 0) {
+          foffset = 0.5;
+        } else if (ht_1[i * D * H + j] == 0) {
+          foffset = 0.0;
+        } else {
+          foffset = -0.5;
+        }
+        ht_1_int8[i * D * H + j] = (MKL_INT8)(ht_1[i * D * H + j] * factor_ht_1
+            + foffset) + 64;  //  ensure ht_1 >= 0
       }
     }
 
+
     cblas_gemm_s8u8s32(CblasRowMajor, CblasNoTrans, CblasTrans,
-        offsetc, N, 3 * H, H, alpha, ht_1_int8, D * H, ao, 
-        wh_int8, H, bo, beta, gemmC2_int8, 3 * H, &co);
+        CblasRowOffset, N, 3 * H, H, alpha, ht_1_int8, D * H, ao,
+        wh_int8, H, bo, beta, gemmC2_int8, 3 * H, wh_sum_int8);
 
     // scale back gemmC2
     #pragma omp parallel for num_threads(omp_threads)
-    for (int i = 0; i < N; ++i) {    
+    for (int i = 0; i < N; ++i) {
       for (int j = 0; j < 3 * H; ++j) {
         gemmC2[i * 3 * H + j] = gemmC2_int8[i * 3 * H + j] / (factor_wh * factor_ht_1);
       }
     }
-
+/*
+    for(int i = 0; i < 5; i++) {
+      LOG(INFO) << "gemmC2[" << i << "]" << gemmC2[i];
+    }
+*/
     gemmC1_t = gemmC1 + t * N * 3 * H;
     #pragma omp parallel for num_threads(omp_threads)
     for (int i = 0; i < N; ++i) {
@@ -834,8 +948,12 @@ void GruForwardInferenceSingleLayer_int8(DType* ws,
             + bx[1][j] + bh[1][j]);
         nt[i * H + j] = tanh(gemmC1_t[ntb + j] + bx[2][j] +
             rt[i * H + j] * (gemmC2[ntb + j] + bh[2][j]));
+        /*
         ht[i * D * H + j] = (1 - zt[i * H + j]) * nt[i * H + j] +
             zt[i * H + j] * (ht_1_int8[i * D * H + j] / factor_ht_1);
+        */
+        ht[i * D * H + j] = (1 - zt[i * H + j]) * nt[i * H + j] +
+            zt[i * H + j] * ht_1[i * D * H + j];
       }
     }
     ht_1 = ht;
@@ -852,33 +970,41 @@ void GruForwardInferenceSingleLayer_int8(DType* ws,
       // scale back_ht_1
       float factor_back_ht_1 = 1.0;
       if (D == 1) {
-        factor_back_ht_1 = 255 / getmax(back_ht_1, N * D * H);
+        factor_back_ht_1 = 63 / getmax(back_ht_1, N * D * H);
       } else {
         Tensor<cpu, 2, DType> dback_ht_1(back_ht_1 - H, Shape2(N, D * H));
         Tensor<cpu, 3, DType> dback_ht_1_tmp = Tensor<cpu, 3, DType>
             (reinterpret_cast<DType*>(tmp_buf), Shape3(D, H, N));
         dback_ht_1_tmp = reshape(dback_ht_1.T(), Shape3(D, H, N));
-        factor_back_ht_1 = 255 / getmax(dback_ht_1_tmp[1].dptr_, H * N);
+        factor_back_ht_1 = 63 / getmax(dback_ht_1_tmp[1].dptr_, H * N);
       }
       #pragma omp parallel for num_threads(omp_threads)
-      for (int i = 0; i < N; ++i) {    
+      for (int i = 0; i < N; ++i) {
         for (int j = 0; j < D * H; ++j) {
-          back_ht_1_int8[i * D * H + j] = (MKL_INT8)(back_ht_1[i * D * H + j] * factor_back_ht_1 + foffset);
+          if (back_ht_1[i * D * H + j] > 0) {
+            foffset = 0.5;
+          } else if (back_ht_1[i * D * H + j] == 0) {
+            foffset = 0.0;
+          } else {
+            foffset = -0.5;
+          }
+          back_ht_1_int8[i * D * H + j] = (MKL_INT8)(back_ht_1[i * D * H + j] * factor_back_ht_1
+              + foffset) + 64;  // ensure back_ht1 >= 0
         }
       }
 
       cblas_gemm_s8u8s32(CblasRowMajor, CblasNoTrans, CblasTrans,
-          offsetc, N, 3 * H, H, alpha, back_ht_1_int8, D * H, ao, 
-          back_wh_int8, H, bo, beta, gemmC2_int8, 3 * H, &co);
+          CblasRowOffset, N, 3 * H, H, alpha, back_ht_1_int8, D * H, ao,
+          back_wh_int8, H, bo, beta, gemmC2_int8, 3 * H, back_wh_sum_int8);
 
       // scale back gemmC2
       #pragma omp parallel for num_threads(omp_threads)
-      for (int i = 0; i < N; ++i) {    
+      for (int i = 0; i < N; ++i) {
         for (int j = 0; j < 3 * H; ++j) {
           gemmC2[i * 3 * H + j] = gemmC2_int8[i * 3 * H + j] / (factor_backwh * factor_back_ht_1);
         }
       }
-      
+
       #pragma omp parallel for num_threads(omp_threads)
       for (int i = 0; i < N; ++i) {
         for (int j = 0; j < H; ++j) {
@@ -891,8 +1017,12 @@ void GruForwardInferenceSingleLayer_int8(DType* ws,
               gemmC2[ztb + j] + back_bx[1][j]+ back_bh[1][j]);
           nt[i * H + j] = tanh(gemmC1_t[ntb + j] + back_bx[2][j]
               + rt[i * H + j] * (gemmC2[ntb + j] + back_bh[2][j]));
+          /*
           back_ht[i * D * H + j] = (1 - zt[i * H + j]) * nt[i * H + j]
               + zt[i * H + j] * (back_ht_1_int8[i * D * H + j] / factor_back_ht_1);
+          */
+          back_ht[i * D * H + j] = (1 - zt[i * H + j]) * nt[i * H + j]
+              + zt[i * H + j] * back_ht_1[i * D * H + j];
         }
       }
       back_ht_1 = back_ht;
@@ -903,16 +1033,20 @@ void GruForwardInferenceSingleLayer_int8(DType* ws,
   mkl_free(x_int8);
   mkl_free(wx_int8);
   mkl_free(wh_int8);
+  mkl_free(wx_sum_int8);
+  mkl_free(wh_sum_int8);
   mkl_free(gemmC1_int8);
   mkl_free(gemmC2_int8);
   mkl_free(ht_1_int8);
   if (D == 2) {
     mkl_free(back_wx_int8);
     mkl_free(back_wh_int8);
+    mkl_free(back_wx_sum_int8);
+    mkl_free(back_wh_sum_int8);
     mkl_free(back_gemmC1_int8);
     mkl_free(back_ht_1_int8);
   }
-  
+
   //  copy last state to hy, from(N, H * D) to (D, N, H)
   if (state_outputs) {
     if (D == 1) {
@@ -2446,7 +2580,7 @@ void VanillaRNNBackwardSingleLayer(DType* ws,
           dart[id] = dht1[id] * (1 - nt[id] * nt[id]);
         } else {
           dart[id] = nt[id] >= 0.0f ? static_cast<float>(dht1[id]) : 0.0f;
-        }        
+        }
         dht1[id] = 0;
       }
     }
