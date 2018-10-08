@@ -51,6 +51,7 @@ long bd_gemm_time = 0;
 long bd_gemm_call = 0;
 long bd_scale_time = 0;
 float bd_offlinemax =  getenv("BDOFFLINEMAX") ? atof(getenv("BDOFFLINEMAX")) : 1.0f;
+long bd_mem_size =  getenv("BDMEMSIZE") ? atol(getenv("BDMEMSIZE")) : 2560;
 
 namespace mxnet {
 namespace op {
@@ -1333,8 +1334,302 @@ void DotBackwardEx(const nnvm::NodeAttrs& attrs,
   }
 }
 
+
 template<typename xpu>
 void BatchDotForward_int8_(const nnvm::NodeAttrs& attrs,
+                      const OpContext& ctx,
+                      const std::vector<TBlob>& inputs,
+                      const std::vector<OpReqType>& req,
+                      const std::vector<TBlob>& outputs) {
+  using namespace mshadow;
+  using namespace mshadow::expr;
+  mshadow::Stream<xpu> *s = ctx.get_stream<xpu>();
+  const DotParam& param = nnvm::get<DotParam>(attrs.parsed);
+  CHECK_EQ(outputs[0].type_flag_, inputs[0].type_flag_)
+      << "Binary function only support input/output with the same type";
+  CHECK_EQ(outputs[0].type_flag_, inputs[1].type_flag_)
+      << "Binary function only support input/output with the same type";
+  CHECK(outputs[0].type_flag_ == kFloat32 || outputs[0].type_flag_ == kFloat64 ||
+    (outputs[0].type_flag_ == kFloat16 && ctx.run_ctx.ctx.dev_mask() == mshadow::gpu::kDevMask))
+    << "dot only supports float32/float64 for CPU, and float16/float32/float64 for GPU";
+  if (ctx.is_train == 0) {  //  inference
+    MSHADOW_REAL_TYPE_SWITCH(outputs[0].type_flag_, DType, {
+      mshadow::Tensor<xpu, 3, DType> out = outputs[0].get<xpu, 3, DType>(s);
+      mshadow::Tensor<xpu, 3, DType> mlhs = inputs[0].get<xpu, 3, DType>(s);
+      mshadow::Tensor<xpu, 3, DType> mrhs = inputs[1].get<xpu, 3, DType>(s);
+      
+      struct timeval start, end;
+      long costtime;  
+      if(bdCalTime) {
+        gettimeofday(&start, NULL );
+      }
+/*
+      MKL_INT8* mlhs_int8 = reinterpret_cast<MKL_INT8* >
+          (mkl_calloc(mlhs.shape_[1] * mlhs.shape_[2], sizeof(MKL_INT8), 64));
+      MKL_INT8* mrhs_int8 = reinterpret_cast<MKL_INT8* >
+          (mkl_calloc(mrhs.shape_[1] * mrhs.shape_[2], sizeof(MKL_INT8), 64));
+      MKL_INT32* out_int8 = reinterpret_cast<MKL_INT32* >
+      (mkl_calloc(out.shape_[1] * out.shape_[2], sizeof(MKL_INT32), 64));
+*/
+      CBLAS_TRANSPOSE trans_a = param.transpose_a ? CblasTrans : CblasNoTrans;
+      CBLAS_TRANSPOSE trans_b = param.transpose_b ? CblasTrans : CblasNoTrans;
+      CBLAS_LAYOUT layout = CblasRowMajor;
+      MKL_INT m = param.transpose_a ? (MKL_INT)mlhs.shape_[2] : (MKL_INT)mlhs.shape_[1];
+      MKL_INT n = param.transpose_b ? (MKL_INT)mrhs.shape_[1] : (MKL_INT)mrhs.shape_[2];
+      MKL_INT k = param.transpose_b ? (MKL_INT)mrhs.shape_[2] : (MKL_INT)mrhs.shape_[1];
+      MKL_INT lda = 0, ldb = 0, ldc = 0;
+      if (layout == CblasRowMajor && trans_a == CblasNoTrans) {
+        lda = k;
+      } else if (layout == CblasColMajor && trans_a == CblasTrans) {
+        lda = k;
+      } else {
+        lda = m;
+      }
+      if (layout == CblasRowMajor && trans_b == CblasNoTrans) {
+        ldb = n;
+      } else if (layout == CblasColMajor && trans_b == CblasTrans) {
+        ldb = n;
+      } else {
+        ldb = k;
+      }
+      ldc = (layout == CblasRowMajor) ? n : m;
+      DType alpha = 1.0;
+      DType beta = 0.0;
+      MKL_INT ao = -64, bo = 0;
+      MKL_INT32 co = 0;
+      CBLAS_TRANSPOSE trans_a_batch[out.shape_[0]];
+      CBLAS_TRANSPOSE trans_b_batch[out.shape_[0]];
+      CBLAS_OFFSET offset_batch[out.shape_[0]];
+      MKL_INT* m_batch = reinterpret_cast<MKL_INT*> (mkl_calloc(out.shape_[0], sizeof(MKL_INT), 64));
+      MKL_INT* n_batch = reinterpret_cast<MKL_INT*> (mkl_calloc(out.shape_[0], sizeof(MKL_INT), 64));
+      MKL_INT* k_batch = reinterpret_cast<MKL_INT*> (mkl_calloc(out.shape_[0], sizeof(MKL_INT), 64));
+      float alpha_batch[out.shape_[0]];
+      float beta_batch[out.shape_[0]];
+      MKL_INT8* ao_batch = reinterpret_cast<MKL_INT8*> (mkl_calloc(out.shape_[0], sizeof(MKL_INT8), 64));
+      MKL_INT8* bo_batch = reinterpret_cast<MKL_INT8*> (mkl_calloc(out.shape_[0], sizeof(MKL_INT8), 64));
+      MKL_INT* lda_batch = reinterpret_cast<MKL_INT*> (mkl_calloc(out.shape_[0], sizeof(MKL_INT), 64));
+      MKL_INT* ldb_batch = reinterpret_cast<MKL_INT*> (mkl_calloc(out.shape_[0], sizeof(MKL_INT), 64));
+      MKL_INT* ldc_batch = reinterpret_cast<MKL_INT*> (mkl_calloc(out.shape_[0], sizeof(MKL_INT), 64));
+      MKL_INT group_size = out.shape_[0];
+      float factor_lr_batch[out.shape_[0]];
+      MKL_INT8* mlhs_int8_batch[mlhs.shape_[0]];
+      MKL_INT8* mrhs_int8_batch[mrhs.shape_[0]];
+      MKL_INT32* out_int8_batch[out.shape_[0]];
+      MKL_INT32* co_batch[out.shape_[0]];
+
+      for (int i = 0; i < out.shape_[0]; i++) {
+        trans_a_batch[i] = trans_a;
+        trans_b_batch[i] = trans_b;
+        offset_batch[i] = CblasFixOffset;
+        m_batch[i] = m;
+        n_batch[i] = n;
+        k_batch[i] = k;
+        alpha_batch[i] = alpha;
+        beta_batch[i] = beta;
+        ao_batch[i] = ao;
+        bo_batch[i] = bo;
+        co_batch[i] = &co;
+        lda_batch[i] = lda;
+        ldb_batch[i] = ldb;
+        ldc_batch[i] = ldc;
+        mlhs_int8_batch[i] = reinterpret_cast<MKL_INT8* >
+            (mkl_calloc(mlhs.shape_[1] * mlhs.shape_[2], sizeof(MKL_INT8), 64));
+        mrhs_int8_batch[i] = reinterpret_cast<MKL_INT8* >
+            (mkl_calloc(mrhs.shape_[1] * mrhs.shape_[2], sizeof(MKL_INT8), 64));
+        out_int8_batch[i] = reinterpret_cast<MKL_INT32* >
+            (mkl_calloc(out.shape_[1] * out.shape_[2], sizeof(MKL_INT32), 64));
+      }
+
+      if(bdCalTime) {
+        gettimeofday(&end, NULL );
+        if (end.tv_sec == start.tv_sec) {
+          costtime = end.tv_usec - start.tv_usec;
+        } else {
+          costtime = (end.tv_sec-start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
+        }
+        (bd_mkl_time) += costtime;
+        LOG(INFO) << "costtime:" << (float)costtime/1000 << "ms" << " bd_mkl_time:" << (float)(bd_mkl_time)/1000 << "ms";
+        gettimeofday(&start, NULL );
+      }
+
+      for (int i = 0; i < out.shape_[0]; i++) {
+        float factor_l = 63 / bd_offlinemax;
+        float factor_r = 127 / bd_offlinemax;
+        scale_data(mlhs[i].dptr_, reinterpret_cast<int>(m) * reinterpret_cast<int>(k), factor_l, mlhs_int8_batch[i], 64);
+        scale_data(mrhs[i].dptr_, reinterpret_cast<int>(k) * reinterpret_cast<int>(n), factor_r, mrhs_int8_batch[i], 0);
+        factor_lr_batch[i] = factor_l * factor_r;
+      }
+
+      if(bdCalTime) {
+        gettimeofday(&end, NULL );
+        if (end.tv_sec == start.tv_sec) {
+          costtime = end.tv_usec - start.tv_usec;
+        } else {
+          costtime = (end.tv_sec-start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
+        }
+        (bd_scale_time) += costtime;
+        gettimeofday(&start, NULL );
+      }
+
+      cblas_gemm_s8u8s32_batch(layout, trans_a_batch, trans_b_batch, offset_batch,
+          m_batch, n_batch, k_batch, alpha_batch, mlhs_int8_batch, lda_batch, ao_batch, mrhs_int8_batch, ldb_batch, bo_batch, beta_batch,
+          out_int8_batch, ldc_batch, co_batch, 1, &group_size);
+
+      if(bdCalTime) {
+        bd_gemm_call++;
+        gettimeofday(&end, NULL );
+        if (end.tv_sec == start.tv_sec) {
+          costtime = end.tv_usec - start.tv_usec;
+        } else {
+          costtime = (end.tv_sec-start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
+        }
+        (bd_gemm_time) += costtime;
+        gettimeofday(&start, NULL );
+      }
+
+      for (int i = 0; i < out.shape_[0]; i++) {
+        dequantilize(out_int8_batch[i], out.shape_[1] * out.shape_[2], factor_lr_batch[i], out[i].dptr_);
+      }
+
+      if(bdCalTime) {
+        gettimeofday(&end, NULL );
+        if (end.tv_sec == start.tv_sec) {
+          costtime = end.tv_usec - start.tv_usec;
+        } else {
+          costtime = (end.tv_sec-start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
+        }
+        (bd_dq_time) += costtime;
+        gettimeofday(&start, NULL );
+      }
+
+      mkl_free(m_batch);
+      mkl_free(n_batch);
+      mkl_free(k_batch);
+      mkl_free(ao_batch);
+      mkl_free(bo_batch);
+      mkl_free(lda_batch);
+      mkl_free(ldb_batch);
+      mkl_free(ldc_batch);
+      for (int i = 0; i < out.shape_[0]; i++) {
+        mkl_free(mlhs_int8_batch[i]);
+        mkl_free(mrhs_int8_batch[i]);
+        mkl_free(out_int8_batch[i]);
+      }
+
+      if(bdCalTime) {
+        gettimeofday(&end, NULL );
+        if (end.tv_sec == start.tv_sec) {
+          costtime = end.tv_usec - start.tv_usec;
+        } else {
+          costtime = (end.tv_sec-start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
+        }
+        (bd_mkl_time) += costtime;
+        LOG(INFO) << "costtime:" << (float)costtime/1000 << "ms" << " bd_mkl_time:" << (float)(bd_mkl_time)/1000 << "ms";
+        LOG(INFO) << "bd_scale_time:" << (float)(bd_scale_time)/1000 << "ms";
+        LOG(INFO) << "bd_dq_time:" << (float)(bd_dq_time)/1000 << "ms";
+        LOG(INFO) << "bd_gemm_time:" << (float)(bd_gemm_time)/1000 << "ms" << " bd_gemm_call:" << bd_gemm_call;
+      }
+/*
+      for (int i = 0; i < out.shape_[0]; i++) {
+        if(bdCalTime) {
+          gettimeofday(&start, NULL );
+        }
+
+        // get detailed time
+        float factor_l = 63 / bd_offlinemax;
+        float factor_r = 127 / bd_offlinemax;
+        scale_data(mlhs[i].dptr_, reinterpret_cast<int>(m) * reinterpret_cast<int>(k), factor_l, mlhs_int8, 64);
+        scale_data(mrhs[i].dptr_, reinterpret_cast<int>(k) * reinterpret_cast<int>(n), factor_r, mrhs_int8, 0);
+        if(bdCalTime) {
+          gettimeofday(&end, NULL );
+          if (end.tv_sec == start.tv_sec) {
+            costtime = end.tv_usec - start.tv_usec;
+          } else {
+            costtime = (end.tv_sec-start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
+          }
+          (bd_scale_time) += costtime;
+          gettimeofday(&start, NULL );
+        }
+        float  factor_lr = factor_l * factor_r;
+        cblas_gemm_s8u8s32(layout, trans_a, trans_b, CblasFixOffset,
+          m, n, k, alpha, mlhs_int8, lda, ao, mrhs_int8, ldb, bo, beta,
+          out_int8, ldc, &co);
+
+        if(bdCalTime) {
+          bd_gemm_call++;
+          gettimeofday(&end, NULL );
+          if (end.tv_sec == start.tv_sec) {
+            costtime = end.tv_usec - start.tv_usec;
+          } else {
+            costtime = (end.tv_sec-start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
+          }
+          (bd_gemm_time) += costtime;
+          gettimeofday(&start, NULL );
+        }
+        dequantilize(out_int8, out.shape_[1] * out.shape_[2], factor_lr, out[i].dptr_);
+        if(bdCalTime) {
+          gettimeofday(&end, NULL );
+          if (end.tv_sec == start.tv_sec) {
+            costtime = end.tv_usec - start.tv_usec;
+          } else {
+            costtime = (end.tv_sec-start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
+          }
+          (bd_dq_time) += costtime;
+          gettimeofday(&start, NULL );
+        }
+      }
+      mkl_free(mlhs_int8);
+      mkl_free(mrhs_int8);
+      mkl_free(mrhs_sum_int8);
+      mkl_free(out_int8);
+      if(bdCalTime) {
+        gettimeofday(&end, NULL );
+        if (end.tv_sec == start.tv_sec) {
+          costtime = end.tv_usec - start.tv_usec;
+        } else {
+          costtime = (end.tv_sec-start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
+        }
+        (bd_mkl_time) += costtime;
+        LOG(INFO) << "costtime:" << (float)costtime/1000 << "ms" << " bd_mkl_time:" << (float)(bd_mkl_time)/1000 << "ms";
+        LOG(INFO) << "bd_scale_time:" << (float)(bd_scale_time)/1000 << "ms";
+        LOG(INFO) << "bd_dq_time:" << (float)(bd_dq_time)/1000 << "ms";
+        LOG(INFO) << "bd_gemm_time:" << (float)(bd_gemm_time)/1000 << "ms" << " bd_gemm_call:" << bd_gemm_call;
+      }
+*/
+    });
+
+  } else {
+    MSHADOW_REAL_TYPE_SWITCH(outputs[0].type_flag_, DType, {
+      mshadow::Tensor<xpu, 3, DType> out = outputs[0].get<xpu, 3, DType>(s);
+      mshadow::Tensor<xpu, 3, DType> mlhs = inputs[0].get<xpu, 3, DType>(s);
+      mshadow::Tensor<xpu, 3, DType> mrhs = inputs[1].get<xpu, 3, DType>(s);
+      mshadow::Tensor<xpu, 1, DType*> workspace =
+        ctx.requested[0].get_space_typed<xpu, 1, DType*>(mshadow::Shape1(3 * out.size(0)), s);
+      if (kNullOp != req[0]) {
+        if (param.transpose_a && param.transpose_b) {
+          mshadow::BatchGEMM<true, true>(out, mlhs, mrhs, (DType)1.0f,
+                                         (kAddTo == req[0]) ? (DType)1.0f : (DType)0.0f,
+                                         workspace);
+        } else if (!param.transpose_a && param.transpose_b) {
+          mshadow::BatchGEMM<false, true>(out, mlhs, mrhs, (DType)1.0f,
+                                         (kAddTo == req[0]) ? (DType)1.0f : (DType)0.0f,
+                                         workspace);
+        } else if (param.transpose_a && !param.transpose_b) {
+          mshadow::BatchGEMM<true, false>(out, mlhs, mrhs, (DType)1.0f,
+                                         (kAddTo == req[0]) ? (DType)1.0f : (DType)0.0f,
+                                         workspace);
+        } else {
+          mshadow::BatchGEMM<false, false>(out, mlhs, mrhs, (DType)1.0f,
+                                         (kAddTo == req[0]) ? (DType)1.0f : (DType)0.0f,
+                                         workspace);
+        }
+      }
+    });
+  }
+}
+
+template<typename xpu>
+void BatchDotForward_int8_bak(const nnvm::NodeAttrs& attrs,
                       const OpContext& ctx,
                       const std::vector<TBlob>& inputs,
                       const std::vector<OpReqType>& req,
@@ -1361,6 +1656,7 @@ void BatchDotForward_int8_(const nnvm::NodeAttrs& attrs,
       if(bdCalTime) {
         gettimeofday(&start, NULL );
       }
+
       MKL_INT8* mlhs_int8 = reinterpret_cast<MKL_INT8* >
           (mkl_calloc(mlhs.shape_[1] * mlhs.shape_[2], sizeof(MKL_INT8), 64));
       MKL_INT8* mrhs_int8 = reinterpret_cast<MKL_INT8* >
@@ -1370,6 +1666,7 @@ void BatchDotForward_int8_(const nnvm::NodeAttrs& attrs,
           (mkl_calloc(sum_size, sizeof(MKL_INT32), 64));
       MKL_INT32* out_int8 = reinterpret_cast<MKL_INT32* >
       (mkl_calloc(out.shape_[1] * out.shape_[2], sizeof(MKL_INT32), 64));
+
       CBLAS_TRANSPOSE trans_a = param.transpose_a ? CblasTrans : CblasNoTrans;
       CBLAS_TRANSPOSE trans_b = param.transpose_b ? CblasTrans : CblasNoTrans;
       CBLAS_LAYOUT layout = CblasRowMajor;

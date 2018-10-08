@@ -222,6 +222,63 @@ void dequantilize(MKL_INT32* x, size_t size, float factor, DType* x_out) {
     x_out[i] = x[i] / factor;  //  float
   }
 }
+
+template<typename DType>
+void cblas_gemm_s8u8s32_batch(CBLAS_LAYOUT    layout,
+                              CBLAS_TRANSPOSE *p_transA,
+                              CBLAS_TRANSPOSE *p_transB,
+                              CBLAS_OFFSET    *p_offsetc,
+                              MKL_INT         *p_m,
+                              MKL_INT         *p_n,
+                              MKL_INT         *p_k,
+                              DType           *p_alpha,
+                              MKL_INT8        **pp_a,
+                              MKL_INT         *p_lda,
+                              MKL_INT8        *p_ao,
+                              MKL_INT8        **pp_b,
+                              MKL_INT         *p_ldb,
+                              MKL_INT8        *p_bo,
+                              DType           *p_beta,
+                              MKL_INT32       **pp_c,
+                              MKL_INT         *p_ldc,
+                              MKL_INT32       **pp_offset_data_array,
+                              MKL_INT         grp_count,
+                              MKL_INT         *p_group_size)
+
+{
+    int i, j;
+    MKL_INT8 *p_a;
+    MKL_INT8 *p_b;
+    MKL_INT32 *p_c;
+    MKL_INT32 *p_offset_data_array;
+
+    int nthrs_blas;
+    nthrs_blas = mkl_domain_get_max_threads(MKL_DOMAIN_BLAS);
+
+
+    //Add pragma omp
+
+    if (grp_count == 1){
+        MKL_INT block_size = (p_group_size[0] % nthrs_blas) ? (p_group_size[0] / nthrs_blas + 1) : (p_group_size[0] / nthrs_blas);
+        #pragma omp parallel for shared(layout, p_transA, p_transB, p_offsetc, p_m, p_n, p_k, p_alpha, pp_a, p_lda, p_ao, pp_b, p_ldb, p_bo, p_beta, pp_c, p_ldc, pp_offset_data_array) private(i, j, p_a, p_b, p_c, p_offset_data_array) schedule(static, 1) num_threads(nthrs_blas)
+        for (i = 0; i < nthrs_blas; i++) {
+            int tmp = (i+1)*block_size < p_group_size[0] ? (i+1)*block_size : p_group_size[0];
+            for (j = i*block_size; j < tmp; j++) {
+            p_a = pp_a[j];
+            p_b = pp_b[j];
+            p_c = pp_c[j];
+            p_offset_data_array = pp_offset_data_array[j];
+            cblas_gemm_s8u8s32(layout, p_transA[0], p_transB[0], p_offsetc[0], p_m[0], p_n[0], p_k[0], p_alpha[0], p_a, p_lda[0], p_ao[0], p_b, p_ldb[0], p_bo[0], p_beta[0], p_c, p_ldc[0], p_offset_data_array);
+            }
+        }
+        return;
+    }
+    else{
+        printf("grp_count > 1, exiting\n");
+        exit(1);
+    }
+}
+
 template<typename DType>
 void LstmForwardTrainingSingleLayer(DType* ws,
                                     DType* rs,
