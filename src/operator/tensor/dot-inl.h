@@ -51,7 +51,10 @@ long bd_gemm_time = 0;
 long bd_gemm_call = 0;
 long bd_scale_time = 0;
 float bd_offlinemax =  getenv("BDOFFLINEMAX") ? atof(getenv("BDOFFLINEMAX")) : 1.0f;
-long bd_mem_size =  getenv("BDMEMSIZE") ? atol(getenv("BDMEMSIZE")) : 2560;
+long bd_mem_size =  getenv("BDMEMSIZE") ? atol(getenv("BDMEMSIZE")) : 2560 * 512 * 101;
+MKL_INT8* mlhs_int8_batch = reinterpret_cast<MKL_INT8*> (mkl_calloc(bd_mem_size, sizeof(MKL_INT8), 64));
+MKL_INT8* mrhs_int8_batch = reinterpret_cast<MKL_INT8*> (mkl_calloc(bd_mem_size, sizeof(MKL_INT8), 64));
+MKL_INT32* out_int8_batch = reinterpret_cast<MKL_INT32*> (mkl_calloc(bd_mem_size, sizeof(MKL_INT32), 64));
 
 namespace mxnet {
 namespace op {
@@ -1412,9 +1415,9 @@ void BatchDotForward_int8_(const nnvm::NodeAttrs& attrs,
       MKL_INT* ldc_batch = reinterpret_cast<MKL_INT*> (mkl_calloc(out.shape_[0], sizeof(MKL_INT), 64));
       MKL_INT group_size = out.shape_[0];
       float factor_lr_batch[out.shape_[0]];
-      MKL_INT8* mlhs_int8_batch[mlhs.shape_[0]];
-      MKL_INT8* mrhs_int8_batch[mrhs.shape_[0]];
-      MKL_INT32* out_int8_batch[out.shape_[0]];
+ //     MKL_INT8* mlhs_int8_batch = reinterpret_cast<MKL_INT8*> (mkl_calloc(mlhs.shape_[0] * mlhs.shape_[1] * mlhs.shape_[2], sizeof(MKL_INT8), 64));
+ //     MKL_INT8* mrhs_int8_batch = reinterpret_cast<MKL_INT8*> (mkl_calloc(mrhs.shape_[0] * mrhs.shape_[1] * mrhs.shape_[2], sizeof(MKL_INT8), 64));
+ //     MKL_INT32* out_int8_batch = reinterpret_cast<MKL_INT32*> (mkl_calloc(out.shape_[0] * out.shape_[1] * out.shape_[2], sizeof(MKL_INT32), 64));
       MKL_INT32* co_batch[out.shape_[0]];
 
       for (int i = 0; i < out.shape_[0]; i++) {
@@ -1432,12 +1435,6 @@ void BatchDotForward_int8_(const nnvm::NodeAttrs& attrs,
         lda_batch[i] = lda;
         ldb_batch[i] = ldb;
         ldc_batch[i] = ldc;
-        mlhs_int8_batch[i] = reinterpret_cast<MKL_INT8* >
-            (mkl_calloc(mlhs.shape_[1] * mlhs.shape_[2], sizeof(MKL_INT8), 64));
-        mrhs_int8_batch[i] = reinterpret_cast<MKL_INT8* >
-            (mkl_calloc(mrhs.shape_[1] * mrhs.shape_[2], sizeof(MKL_INT8), 64));
-        out_int8_batch[i] = reinterpret_cast<MKL_INT32* >
-            (mkl_calloc(out.shape_[1] * out.shape_[2], sizeof(MKL_INT32), 64));
       }
 
       if(bdCalTime) {
@@ -1455,8 +1452,8 @@ void BatchDotForward_int8_(const nnvm::NodeAttrs& attrs,
       for (int i = 0; i < out.shape_[0]; i++) {
         float factor_l = 63 / bd_offlinemax;
         float factor_r = 127 / bd_offlinemax;
-        scale_data(mlhs[i].dptr_, reinterpret_cast<int>(m) * reinterpret_cast<int>(k), factor_l, mlhs_int8_batch[i], 64);
-        scale_data(mrhs[i].dptr_, reinterpret_cast<int>(k) * reinterpret_cast<int>(n), factor_r, mrhs_int8_batch[i], 0);
+        scale_data(mlhs[i].dptr_, reinterpret_cast<int>(m) * reinterpret_cast<int>(k), factor_l, mlhs_int8_batch + i * reinterpret_cast<int>(m) * reinterpret_cast<int>(k), 64);
+        scale_data(mrhs[i].dptr_, reinterpret_cast<int>(k) * reinterpret_cast<int>(n), factor_r, mrhs_int8_batch + i * reinterpret_cast<int>(n) * reinterpret_cast<int>(k), 0);
         factor_lr_batch[i] = factor_l * factor_r;
       }
 
@@ -1488,7 +1485,7 @@ void BatchDotForward_int8_(const nnvm::NodeAttrs& attrs,
       }
 
       for (int i = 0; i < out.shape_[0]; i++) {
-        dequantilize(out_int8_batch[i], out.shape_[1] * out.shape_[2], factor_lr_batch[i], out[i].dptr_);
+        dequantilize(out_int8_batch + i * reinterpret_cast<int>(m) * reinterpret_cast<int>(n), out.shape_[1] * out.shape_[2], factor_lr_batch[i], out[i].dptr_);
       }
 
       if(bdCalTime) {
@@ -1510,11 +1507,9 @@ void BatchDotForward_int8_(const nnvm::NodeAttrs& attrs,
       mkl_free(lda_batch);
       mkl_free(ldb_batch);
       mkl_free(ldc_batch);
-      for (int i = 0; i < out.shape_[0]; i++) {
-        mkl_free(mlhs_int8_batch[i]);
-        mkl_free(mrhs_int8_batch[i]);
-        mkl_free(out_int8_batch[i]);
-      }
+//      mkl_free(mlhs_int8_batch);
+//      mkl_free(mrhs_int8_batch);
+//      mkl_free(out_int8_batch);
 
       if(bdCalTime) {
         gettimeofday(&end, NULL );
@@ -1529,73 +1524,6 @@ void BatchDotForward_int8_(const nnvm::NodeAttrs& attrs,
         LOG(INFO) << "bd_dq_time:" << (float)(bd_dq_time)/1000 << "ms";
         LOG(INFO) << "bd_gemm_time:" << (float)(bd_gemm_time)/1000 << "ms" << " bd_gemm_call:" << bd_gemm_call;
       }
-/*
-      for (int i = 0; i < out.shape_[0]; i++) {
-        if(bdCalTime) {
-          gettimeofday(&start, NULL );
-        }
-
-        // get detailed time
-        float factor_l = 63 / bd_offlinemax;
-        float factor_r = 127 / bd_offlinemax;
-        scale_data(mlhs[i].dptr_, reinterpret_cast<int>(m) * reinterpret_cast<int>(k), factor_l, mlhs_int8, 64);
-        scale_data(mrhs[i].dptr_, reinterpret_cast<int>(k) * reinterpret_cast<int>(n), factor_r, mrhs_int8, 0);
-        if(bdCalTime) {
-          gettimeofday(&end, NULL );
-          if (end.tv_sec == start.tv_sec) {
-            costtime = end.tv_usec - start.tv_usec;
-          } else {
-            costtime = (end.tv_sec-start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
-          }
-          (bd_scale_time) += costtime;
-          gettimeofday(&start, NULL );
-        }
-        float  factor_lr = factor_l * factor_r;
-        cblas_gemm_s8u8s32(layout, trans_a, trans_b, CblasFixOffset,
-          m, n, k, alpha, mlhs_int8, lda, ao, mrhs_int8, ldb, bo, beta,
-          out_int8, ldc, &co);
-
-        if(bdCalTime) {
-          bd_gemm_call++;
-          gettimeofday(&end, NULL );
-          if (end.tv_sec == start.tv_sec) {
-            costtime = end.tv_usec - start.tv_usec;
-          } else {
-            costtime = (end.tv_sec-start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
-          }
-          (bd_gemm_time) += costtime;
-          gettimeofday(&start, NULL );
-        }
-        dequantilize(out_int8, out.shape_[1] * out.shape_[2], factor_lr, out[i].dptr_);
-        if(bdCalTime) {
-          gettimeofday(&end, NULL );
-          if (end.tv_sec == start.tv_sec) {
-            costtime = end.tv_usec - start.tv_usec;
-          } else {
-            costtime = (end.tv_sec-start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
-          }
-          (bd_dq_time) += costtime;
-          gettimeofday(&start, NULL );
-        }
-      }
-      mkl_free(mlhs_int8);
-      mkl_free(mrhs_int8);
-      mkl_free(mrhs_sum_int8);
-      mkl_free(out_int8);
-      if(bdCalTime) {
-        gettimeofday(&end, NULL );
-        if (end.tv_sec == start.tv_sec) {
-          costtime = end.tv_usec - start.tv_usec;
-        } else {
-          costtime = (end.tv_sec-start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
-        }
-        (bd_mkl_time) += costtime;
-        LOG(INFO) << "costtime:" << (float)costtime/1000 << "ms" << " bd_mkl_time:" << (float)(bd_mkl_time)/1000 << "ms";
-        LOG(INFO) << "bd_scale_time:" << (float)(bd_scale_time)/1000 << "ms";
-        LOG(INFO) << "bd_dq_time:" << (float)(bd_dq_time)/1000 << "ms";
-        LOG(INFO) << "bd_gemm_time:" << (float)(bd_gemm_time)/1000 << "ms" << " bd_gemm_call:" << bd_gemm_call;
-      }
-*/
     });
 
   } else {

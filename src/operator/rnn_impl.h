@@ -232,14 +232,14 @@ void cblas_gemm_s8u8s32_batch(CBLAS_LAYOUT    layout,
                               MKL_INT         *p_n,
                               MKL_INT         *p_k,
                               DType           *p_alpha,
-                              MKL_INT8        **pp_a,
+                              MKL_INT8        *pp_a,
                               MKL_INT         *p_lda,
                               MKL_INT8        *p_ao,
-                              MKL_INT8        **pp_b,
+                              MKL_INT8        *pp_b,
                               MKL_INT         *p_ldb,
                               MKL_INT8        *p_bo,
                               DType           *p_beta,
-                              MKL_INT32       **pp_c,
+                              MKL_INT32       *pp_c,
                               MKL_INT         *p_ldc,
                               MKL_INT32       **pp_offset_data_array,
                               MKL_INT         grp_count,
@@ -264,9 +264,9 @@ void cblas_gemm_s8u8s32_batch(CBLAS_LAYOUT    layout,
         for (i = 0; i < nthrs_blas; i++) {
             int tmp = (i+1)*block_size < p_group_size[0] ? (i+1)*block_size : p_group_size[0];
             for (j = i*block_size; j < tmp; j++) {
-            p_a = pp_a[j];
-            p_b = pp_b[j];
-            p_c = pp_c[j];
+            p_a = pp_a + j * p_m[0] * p_k[0];
+            p_b = pp_b + j * p_n[0] * p_k[0];;
+            p_c = pp_c + j * p_m[0] * p_n[0];;
             p_offset_data_array = pp_offset_data_array[j];
             cblas_gemm_s8u8s32(layout, p_transA[0], p_transB[0], p_offsetc[0], p_m[0], p_n[0], p_k[0], p_alpha[0], p_a, p_lda[0], p_ao[0], p_b, p_ldb[0], p_bo[0], p_beta[0], p_c, p_ldc[0], p_offset_data_array);
             }
