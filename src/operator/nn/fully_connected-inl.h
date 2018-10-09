@@ -267,8 +267,7 @@ void FCForward_int8(const OpContext &ctx, const FullyConnectedParam &param,
     }
     (*fc_gemm_time) += costtime;
     LOG(INFO) << "costtime:" << (float)costtime/1000 << "ms"
-       << " fc_gemm_time:" << (float)(*fc_gemm_time)/1000 << "ms"
-       << " fc_gemm_call:" << (*fc_gemm_call) << " m:" << m << " n:" << n << " k:" << k;
+       << " fc_gemm_time:" << (float)(*fc_gemm_time)/1000 << "ms";
     gettimeofday(&start, NULL);
   }
 
