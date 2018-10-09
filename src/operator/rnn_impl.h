@@ -26,6 +26,7 @@
 #ifndef MXNET_OPERATOR_RNN_IMPL_H_
 #define MXNET_OPERATOR_RNN_IMPL_H_
 
+#include <mkl.h>
 #include <dmlc/logging.h>
 #include <dmlc/parameter.h>
 #include <mxnet/operator.h>
@@ -34,6 +35,7 @@
 #include <vector>
 #include <string>
 #include <utility>
+#include <cfenv>
 #include "./math.h"
 #include "./math_functions-inl.h"
 #include "./operator_common.h"
@@ -52,6 +54,91 @@ inline DType sigmoid(DType x) {
 template<typename DType>
 inline DType relu(DType x) {
   return x > 0.0f ? static_cast<float>(x) : 0.0f;
+}
+
+template<typename DType>
+inline DType getmax(DType* x, size_t size) {
+  DType ret = 0;
+  if (std::is_same<float, DType>::value) {
+    CBLAS_INDEX idx = cblas_isamax(size, reinterpret_cast<float*>(x), 1);
+    ret = (x[idx] != 0) ? fabs(x[idx]) : 1;
+  } else if (std::is_same<double, DType>::value) {
+    CBLAS_INDEX idx = cblas_idamax(size, reinterpret_cast<double*>(x), 1);
+    ret = (x[idx] != 0) ? fabs(x[idx]) : 1;
+  } else {
+    LOG(INFO) << "not support";
+  }
+  return ret;
+}
+
+template<typename DType>
+void scale_data(DType* x, size_t size, float factor, MKL_UINT8* x_out, int shift) {
+  const int omp_threads = mxnet::engine::OpenMP::Get()->GetRecommendedOMPThreadCount();
+  std::fesetround(FE_TONEAREST);
+  #pragma omp parallel for num_threads(omp_threads)
+  for (size_t i = 0; i < size; ++i) {
+    float tmp = x[i] * factor + shift;
+    x_out[i] = std::nearbyint(tmp);
+  }
+}
+
+template<typename DType>
+void scale_data(DType* x, size_t size, float factor, MKL_INT8* x_out, int shift) {
+  const int omp_threads = mxnet::engine::OpenMP::Get()->GetRecommendedOMPThreadCount();
+  std::fesetround(FE_TONEAREST);
+  #pragma omp parallel for num_threads(omp_threads)
+  for (size_t i = 0; i < size; ++i) {
+    float tmp = x[i] * factor + shift;
+    x_out[i] = std::nearbyint(tmp);
+  }
+}
+
+template<typename DType>
+void prepare_sum_data(MKL_INT8* x, int n, int k, MKL_INT32* x_out, DType transpose_b, int shift) {
+  const int omp_threads = mxnet::engine::OpenMP::Get()->GetRecommendedOMPThreadCount();
+  if (transpose_b) {
+    #pragma omp parallel for num_threads(omp_threads)
+    for (int i = 0; i < n; ++i) {
+      x_out[i] = 0;
+    }
+    #pragma omp parallel for num_threads(omp_threads)
+    for (int i = 0; i < n; ++i) {
+      for (int j = 0; j < k; ++j) {
+        x_out[i] -= shift * x[i * k + j];
+      }
+    }
+  } else {
+    #pragma omp parallel for num_threads(omp_threads)
+    for (int i = 0; i < n; ++i) {
+      x_out[i] = 0;
+    }
+    #pragma omp parallel for num_threads(omp_threads)
+    for (int i = 0; i < n; ++i) {
+      for (int j = 0; j < k; ++j) {
+        x_out[i] -= shift * x[j * n + i];
+      }
+    }
+  }
+}
+
+template<typename DType>
+void copyoffset(DType* out_int8, int m, int n) {
+  const int omp_threads = mxnet::engine::OpenMP::Get()->GetRecommendedOMPThreadCount();
+  #pragma omp parallel for num_threads(omp_threads)
+  for (int j = 1; j < m; ++j) {
+    for (int i = 0; i < n; ++i) {
+      out_int8[j * n + i] = out_int8[i];
+    }
+  }
+}
+
+template<typename DType>
+void dequantilize(MKL_INT32* x, size_t size, float factor, DType* x_out) {
+  const int omp_threads = mxnet::engine::OpenMP::Get()->GetRecommendedOMPThreadCount();
+  #pragma omp parallel for num_threads(omp_threads)
+  for (size_t i = 0; i < size; ++i) {
+    x_out[i] = x[i] / factor;  //  float
+  }
 }
 
 template<typename DType>

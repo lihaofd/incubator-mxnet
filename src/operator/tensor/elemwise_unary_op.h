@@ -35,6 +35,10 @@
 #include "../elemwise_op_common.h"
 #include "../../ndarray/ndarray_function.h"
 
+#if MSHADOW_USE_MKL == 1
+#include "mkl.h"
+#endif
+
 namespace mxnet {
 namespace op {
 
@@ -209,9 +213,9 @@ class UnaryOp : public OpBase {
   }
 
  public:
-  /*! \brief Map NDArray vectors to TBlob vectors and pass to compute function */
-  template<typename xpu, typename FComputer>
-  static inline void MapToFCompute(const nnvm::NodeAttrs &attrs,
+/*! \brief Map NDArray vectors to TBlob vectors and pass to compute function */
+template<typename xpu, typename FComputer>
+static inline void MapToFCompute(const nnvm::NodeAttrs &attrs,
                                    const OpContext &ctx,
                                    const std::vector<NDArray> &inputs,
                                    const std::vector<OpReqType> &req,
@@ -229,12 +233,40 @@ class UnaryOp : public OpBase {
     }
   }
 
-  template<typename xpu, typename OP>
-  static void Compute(const nnvm::NodeAttrs& attrs,
-                      const OpContext& ctx,
-                      const std::vector<TBlob>& inputs,
-                      const std::vector<OpReqType>& req,
-                      const std::vector<TBlob>& outputs) {
+#if MSHADOW_USE_MKL == 1
+template<typename xpu, typename OP>
+static void LogCompute(const nnvm::NodeAttrs& attrs,
+                       const OpContext& ctx,
+                       const std::vector<TBlob>& inputs,
+                       const std::vector<OpReqType>& req,
+                       const std::vector<TBlob>& outputs) {
+    if (outputs[0].type_flag_ != mshadow::kFloat32 || req[0] == kAddTo) {
+      //  fall back, mkl doen't support addTo
+      Compute<xpu, OP>(attrs, ctx, inputs, req, outputs);
+      return;
+    }
+
+    float *pOut = outputs[0].dptr<float>();
+    float *pIn = inputs[0].dptr<float>();
+    size_t N = inputs[0].Size();
+    if (req[0] != kNullOp) {
+      if (N < 40) {
+        for (size_t i = 0; i < N; ++i) {
+          *pOut++ = math::log(*pIn++);
+        }
+      } else {
+      vsLn(N, pIn, pOut);
+      }
+    }
+}
+#endif
+
+template<typename xpu, typename OP>
+static void Compute(const nnvm::NodeAttrs& attrs,
+                    const OpContext& ctx,
+                    const std::vector<TBlob>& inputs,
+                    const std::vector<OpReqType>& req,
+                    const std::vector<TBlob>& outputs) {
     mshadow::Stream<xpu> *s = ctx.get_stream<xpu>();
     MSHADOW_TYPE_SWITCH(outputs[0].type_flag_, DType, {
       MXNET_ASSIGN_REQ_SWITCH(req[0], Req, {
@@ -244,8 +276,8 @@ class UnaryOp : public OpBase {
     });
   }
 
-  template<typename xpu, typename OP>
-  static void ComputeEx(const nnvm::NodeAttrs& attrs,
+template<typename xpu, typename OP>
+static void ComputeEx(const nnvm::NodeAttrs& attrs,
                         const OpContext& ctx,
                         const std::vector<NDArray>& inputs,
                         const std::vector<OpReqType>& req,
@@ -260,8 +292,8 @@ class UnaryOp : public OpBase {
     }
   }
 
-  template<typename xpu, typename op>
-  static void ComputeWithHalf2(const nnvm::NodeAttrs &attrs,
+template<typename xpu, typename op>
+static void ComputeWithHalf2(const nnvm::NodeAttrs &attrs,
                                const OpContext &ctx,
                                const std::vector<TBlob> &inputs,
                                const std::vector<OpReqType> &req,
@@ -277,8 +309,8 @@ class UnaryOp : public OpBase {
     });
   }
 
-  template<typename xpu>
-  static void IdentityCompute(const nnvm::NodeAttrs& attrs,
+template<typename xpu>
+static void IdentityCompute(const nnvm::NodeAttrs& attrs,
                               const OpContext& ctx,
                               const std::vector<TBlob>& inputs,
                               const std::vector<OpReqType>& req,
@@ -306,8 +338,8 @@ class UnaryOp : public OpBase {
     }
   }
 
-  template<typename xpu>
-  static void IdentityComputeEx(const nnvm::NodeAttrs& attrs,
+template<typename xpu>
+static void IdentityComputeEx(const nnvm::NodeAttrs& attrs,
                                 const OpContext& ctx,
                                 const std::vector<NDArray>& inputs,
                                 const std::vector<OpReqType>& req,
@@ -323,8 +355,8 @@ class UnaryOp : public OpBase {
     }
   }
 
-  template<typename xpu>
-  static void IdentityComputeFirstItemEx(const nnvm::NodeAttrs& attrs,
+template<typename xpu>
+static void IdentityComputeFirstItemEx(const nnvm::NodeAttrs& attrs,
                                          const OpContext& ctx,
                                          const std::vector<NDArray>& inputs,
                                          const std::vector<OpReqType>& req,
@@ -514,5 +546,4 @@ void HardSigmoidBackward(const nnvm::NodeAttrs& attrs,
 
 }  // namespace op
 }  // namespace mxnet
-
 #endif  // MXNET_OPERATOR_TENSOR_ELEMWISE_UNARY_OP_H_

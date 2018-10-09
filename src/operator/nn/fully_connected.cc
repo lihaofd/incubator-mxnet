@@ -29,6 +29,26 @@
 #include "../nnpack/nnpack_fully_connected-inl.h"
 #endif  // MXNET_USE_NNPACK
 
+bool bCalTime = getenv("TIMELOG") ? true: false;
+long fc_mkl_time = 0;
+long fc_q_time = 0;
+long fc_max_time = 0;
+long fc_scale_time = 0;
+long fc_sum_time = 0;
+long fc_copyoffset_time = 0;
+long fc_dq_time = 0;
+long fc_gemm_time = 0;
+long fc_gemm_call = 0;
+long mkl_size =  getenv("IMEMSIZE") ? atol(getenv("IMEMSIZE")) : 22666 * 2560;
+MKL_UINT8* data_int8 = reinterpret_cast<MKL_UINT8* >
+      (mkl_calloc(mkl_size, sizeof(MKL_UINT8), 64));
+MKL_INT8* wmat_int8 = reinterpret_cast<MKL_INT8* >
+      (mkl_calloc(mkl_size, sizeof(MKL_INT8), 64));
+MKL_INT32* wmat_sum_int8 = reinterpret_cast<MKL_INT32* >
+      (mkl_calloc(mkl_size, sizeof(MKL_INT32), 64));
+MKL_INT32* out_int8 = reinterpret_cast<MKL_INT32* >
+  (mkl_calloc(mkl_size, sizeof(MKL_INT32), 64));
+
 namespace mxnet {
 namespace op {
 
@@ -92,35 +112,49 @@ void FullyConnectedComputeExCPU(const nnvm::NodeAttrs& attrs,
                  inputs[2].storage_type() == kRowSparseStorage;
   }
 #if MXNET_USE_MKLDNN == 1
-  if (common::ContainsOnlyStorage(inputs, kDefaultStorage) &&
-      common::ContainsOnlyStorage(outputs, kDefaultStorage)) {
-    if (SupportMKLDNN(inputs[0])) {
-      MKLDNN_OPCHECK_INIT(false, outputs.size(), inputs, outputs);
-      MKLDNNFCForward(attrs, ctx, inputs, req, outputs);
-      MKLDNN_OPCHECK_RUN(FullyConnectedCompute<cpu>, attrs, ctx, inputs, req,
-                         outputs);
-    } else {
-      FallBackCompute(FullyConnectedCompute<cpu>, attrs, ctx, inputs, req, outputs);
-    }
-    return;
-  } else if (valid_data && valid_weight && valid_bias && valid_out) {
-    // inputs
-    std::vector<NDArray> temp_ndarrays;
-    std::vector<TBlob> in_blobs;
-    for (const NDArray& in : inputs) {
-      // if ndarray is in default storage and MKLDNN is available,
-      // need to make sure cpu layout data is used, instead of MKL layout
-      if (in.storage_type() == kDefaultStorage) {
-        temp_ndarrays.push_back(in.Reorder2Default());
-        in_blobs.emplace_back(temp_ndarrays.back().data());
+  if (ctx.is_train == 0) {  // inference
+    if (valid_data && valid_weight && valid_bias && valid_out) {
+      std::vector<TBlob> in_blobs(inputs.size());
+      for (size_t i = 0; i < in_blobs.size(); i++) in_blobs[i] = inputs[i].data();
+      std::vector<TBlob> out_blobs(outputs.size());
+      for (size_t i = 0; i < out_blobs.size(); i++) out_blobs[i] = outputs[i].data();
+      FullyConnectedCompute_int8<cpu>(attrs, ctx, in_blobs, req, out_blobs, bCalTime, &fc_mkl_time,
+          &fc_q_time, &fc_dq_time, &fc_gemm_time, &fc_gemm_call, &fc_max_time, &fc_scale_time,
+          &fc_sum_time, &fc_copyoffset_time, data_int8, wmat_int8, wmat_sum_int8, out_int8);
       } else {
-        in_blobs.emplace_back(in.data());
-      }
+        LogUnimplementedOp(attrs, ctx, inputs, req, outputs);
     }
-    // output
-    FullyConnectedCompute<cpu>(attrs, ctx, in_blobs, req, {outputs[0].data()});
   } else {
-    LogUnimplementedOp(attrs, ctx, inputs, req, outputs);
+    if (common::ContainsOnlyStorage(inputs, kDefaultStorage) &&
+        common::ContainsOnlyStorage(outputs, kDefaultStorage)) {
+      if (SupportMKLDNN(inputs[0])) {
+        MKLDNN_OPCHECK_INIT(false, outputs.size(), inputs, outputs);
+        MKLDNNFCForward(attrs, ctx, inputs, req, outputs);
+        MKLDNN_OPCHECK_RUN(FullyConnectedCompute<cpu>, attrs, ctx, inputs, req,
+                           outputs);
+      } else {
+        FallBackCompute(FullyConnectedCompute<cpu>, attrs, ctx, inputs, req, outputs);
+      }
+      return;
+    } else if (valid_data && valid_weight && valid_bias && valid_out) {
+      // inputs
+      std::vector<NDArray> temp_ndarrays;
+      std::vector<TBlob> in_blobs;
+      for (const NDArray& in : inputs) {
+        // if ndarray is in default storage and MKLDNN is available,
+        // need to make sure cpu layout data is used, instead of MKL layout
+        if (in.storage_type() == kDefaultStorage) {
+          temp_ndarrays.push_back(in.Reorder2Default());
+          in_blobs.emplace_back(temp_ndarrays.back().data());
+        } else {
+          in_blobs.emplace_back(in.data());
+        }
+      }
+      // output
+      FullyConnectedCompute<cpu>(attrs, ctx, in_blobs, req, {outputs[0].data()});
+    } else {
+      LogUnimplementedOp(attrs, ctx, inputs, req, outputs);
+    }
   }
 #else
   if (valid_data && valid_weight && valid_bias && valid_out) {
@@ -128,7 +162,13 @@ void FullyConnectedComputeExCPU(const nnvm::NodeAttrs& attrs,
     for (size_t i = 0; i < in_blobs.size(); i++) in_blobs[i] = inputs[i].data();
     std::vector<TBlob> out_blobs(outputs.size());
     for (size_t i = 0; i < out_blobs.size(); i++) out_blobs[i] = outputs[i].data();
-    FullyConnectedCompute<cpu>(attrs, ctx, in_blobs, req, out_blobs);
+    if (ctx.is_train == 0) {  // inference
+      FullyConnectedCompute_int8<cpu>(attrs, ctx, in_blobs, req, out_blobs, bCalTime, &fc_mkl_time,
+          &fc_q_time, &fc_dq_time, &fc_gemm_time, &fc_gemm_call, &fc_max_time, &fc_scale_time,
+          &fc_sum_time, &fc_copyoffset_time, data_int8, wmat_int8, wmat_sum_int8, out_int8);
+    } else {
+      FullyConnectedCompute<cpu>(attrs, ctx, in_blobs, req, out_blobs);
+    }
   } else {
     LogUnimplementedOp(attrs, ctx, inputs, req, outputs);
   }
