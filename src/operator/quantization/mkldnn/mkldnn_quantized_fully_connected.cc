@@ -79,6 +79,8 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
   const int m = dshape[0], n = wshape[0], k = dshape.ProdShape(1, dshape.ndim());
 
   for (int i = 0; i < m * k; i++) {
+    //  cblas_gemm_s8u8s32 required first matrix must be uint8
+    //  shift data from int8(from -128 to 127) to uint8 (from 0 to 255)
     shift_data.data().dptr<uint8_t>()[i] = data.data().dptr<int8_t>()[i] + 128;
   }
 
