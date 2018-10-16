@@ -50,28 +50,25 @@ struct QuantizedBiasAddKernel {
   }
 };
 
-template<typename SrcType, typename DstType, typename CmpType>
+template<typename SrcType>
 void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
-                                       const OpContext &ctx,
-                                       const std::vector<NDArray> &in_data,
-                                       const std::vector<OpReqType> &req,
-                                       const std::vector<NDArray> &out_data) {
+                                          const OpContext &ctx,
+                                          const std::vector<NDArray> &in_data,
+                                          const std::vector<OpReqType> &req,
+                                          const std::vector<NDArray> &out_data) {
   const FullyConnectedParam& param = nnvm::get<FullyConnectedParam>(attrs.parsed);
   using namespace mshadow;
   using namespace mxnet_op;
   size_t num_inputs = param.no_bias ? 2 : 3;
   CHECK_EQ(in_data.size(),  num_inputs * 3);
-  CHECK_EQ(out_data.size(), 3U);
-  const NDArray& data   =  in_data[0];
-  const NDArray& weight =  in_data[1];
-  const NDArray& out    = out_data[0];
+  CHECK_EQ(out_data.size(), 4U);
+  const NDArray& data = in_data[0];
+  const NDArray& weight = in_data[1];
+  const NDArray& out = out_data[0];
+  const NDArray& shift_data = out_data[3];
   TShape dshape = data.shape();
   TShape wshape = weight.shape();
   TShape oshape = out.shape();
-
-  CHECK(in_data[0].dtype() == mshadow::kInt8
-    && in_data[1].dtype() == mshadow::kInt8)
-    << "mkldnn_quantized_FullyConnected op only supports int8 as input type";
 
   const float alpha = 1.0f;
   const float beta  = 0.0f;
@@ -80,12 +77,9 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
   const MKL_INT8 ob = 0;
   MKL_INT32 oc = 0;
   const int m = dshape[0], n = wshape[0], k = dshape.ProdShape(1, dshape.ndim());
-  const int omp_threads = mxnet::engine::OpenMP::Get()->GetRecommendedOMPThreadCount();
-  uint8_t* pDataNewRange = reinterpret_cast<uint8_t*>(malloc(m*k*sizeof(uint8_t)));
 
-  #pragma omp parallel for num_threads(omp_threads)
   for (int i = 0; i < m * k; i++) {
-    pDataNewRange[i] = data.data().dptr<int8_t>()[i] + 128;
+    shift_data.data().dptr<uint8_t>()[i] = data.data().dptr<int8_t>()[i] + 128;
   }
 
   cblas_gemm_s8u8s32(CblasRowMajor,
@@ -96,7 +90,7 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
                      n,
                      k,
                      alpha,
-                     pDataNewRange,
+                     shift_data.data().dptr<uint8_t>(),
                      k,
                      oa,
                      weight.data().dptr<int8_t>(),
@@ -107,7 +101,6 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
                      n,
                      &oc);
 
-  free(pDataNewRange);
   Stream<cpu> *s = ctx.get_stream<cpu>();
   Kernel<QuantizationRangeForMultiplicationStruct, cpu>::Launch(s, 1,
      out_data[1].data().dptr<float>(), out_data[2].data().dptr<float>(),
@@ -125,7 +118,7 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
 
 NNVM_REGISTER_OP(_contrib_quantized_fully_connected)
 .set_attr<FComputeEx>("FComputeEx<cpu>",
-    MKLDNNQuantizedFullyConnectedForward<int8_t, int32_t, int32_t>);
+    MKLDNNQuantizedFullyConnectedForward<int8_t>);
 
 
 }  // namespace op

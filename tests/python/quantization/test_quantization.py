@@ -317,7 +317,7 @@ def test_quantized_fc():
             fc_int8_exe.arg_dict[qarg_names[6]][:] = quantized_range
             fc_int8_exe.arg_dict[qarg_names[7]][:] = -quantized_range
             fc_int8_exe.arg_dict[qarg_names[8]][:] = quantized_range
-        qoutput, min_range, max_range = fc_int8_exe.forward()
+        qoutput, min_range, max_range, shift_data = fc_int8_exe.forward()
 
         if no_bias:
             assert_almost_equal(output.asnumpy(), qoutput.asnumpy())
