@@ -26,9 +26,15 @@
 namespace mxnet {
 namespace op {
 
-// value + bias_value * (range1 / limit_range1) * (limit_range2 / range2)
-struct QuantizedBiasAddKernel {
-  MSHADOW_XINLINE static void Map(int i, size_t k, int32_t *out,
+struct QuantizedShiftKernel {
+  MSHADOW_XINLINE static void Map(int i, int8_t *in, uint8_t *out, int shift) {
+    out[i] = in[i] + shift;
+  }
+};
+
+struct QuantizedSumInitKernelWithBias {
+  //  init sum data with bias for matrix b (n)
+  MSHADOW_XINLINE static void Map(int i, int32_t *out,
                                   const int8_t *bias, const float *min_out,
                                   const float *max_out, const float *min_bias,
                                   const float *max_bias) {
@@ -41,21 +47,35 @@ struct QuantizedBiasAddKernel {
     float float_for_one_bias_quant =
       MaxAbs(*min_bias, *max_bias) / static_cast<double>(MaxValue<T2>());
     if (float_for_one_out_quant != 0) {
-      out[i] = (out[i] * float_for_one_out_quant +
-                bias[i%k] * float_for_one_bias_quant) /
+      out[i] = bias[i] * float_for_one_bias_quant /
                float_for_one_out_quant;
     } else {
       LOG(INFO) << "WARNING: QuantizedBiasAddKernel float_for_one_out_quant is 0 !";
+      out[i] = 0;
     }
   }
 };
 
-struct QuantizedShiftKernel {
-  MSHADOW_XINLINE static void Map(int i, int8_t *in, uint8_t *out, int shift) {
-    out[i] = in[i] + shift;
+struct QuantizedSumInitKernel {
+  //  init sum data for matrix b (n)
+  MSHADOW_XINLINE static void Map(int i, int32_t *out) {
+    out[i] = 0;
   }
 };
 
+struct QuantizedSumKernel {
+  //  get sum data(n) for matrix b (n * k)
+  MSHADOW_XINLINE static void Map(int i, size_t k, int8_t *in, int32_t *out, int shift) {
+    out[i / k] -= shift * in[i];
+  }
+};
+
+struct QuantizedBetaCKernel {
+  //  prepare beta C (from n to m * n)
+  MSHADOW_XINLINE static void Map(int i, size_t n, int32_t *out) {
+    out[i] = out[i % n];
+  }
+};
 
 template<typename SrcType>
 void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
@@ -78,18 +98,35 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
   TShape oshape = out.shape();
 
   const float alpha = 1.0f;
-  const float beta  = 0.0f;
+  const float beta  = 1.0f;
   const CBLAS_OFFSET offsetc = CblasFixOffset;
-  const MKL_INT8 oa = -128;
+  const MKL_INT8 oa = 0;
   const MKL_INT8 ob = 0;
   MKL_INT32 oc = 0;
   const int m = dshape[0], n = wshape[0], k = dshape.ProdShape(1, dshape.ndim());
-
   Stream<cpu> *s = ctx.get_stream<cpu>();
   //  cblas_gemm_s8u8s32 required first matrix must be uint8
   //  shift data from int8(from -128 to 127) to uint8 (from 0 to 255)
+  int shift = 128;
   Kernel<QuantizedShiftKernel, cpu>::Launch(s, m * k, data.data().dptr<int8_t>(),
-      shift_data.data().dptr<uint8_t>(), 128);
+      shift_data.data().dptr<uint8_t>(), shift);
+  Kernel<QuantizationRangeForMultiplicationStruct, cpu>::Launch(s, 1,
+      out_data[1].data().dptr<float>(), out_data[2].data().dptr<float>(),
+      in_data[num_inputs].data().dptr<float>(), in_data[num_inputs+1].data().dptr<float>(),
+      in_data[num_inputs+2].data().dptr<float>(), in_data[num_inputs+3].data().dptr<float>());
+  if (!param.no_bias) {
+    const NDArray& bias = in_data[2];
+    Kernel<QuantizedSumInitKernelWithBias, cpu>::Launch(s, n, out.data().dptr<int32_t>(),
+        bias.data().dptr<int8_t>(), out_data[1].data().dptr<float>(),
+        out_data[2].data().dptr<float>(), in_data[7].data().dptr<float>(),
+        in_data[8].data().dptr<float>());
+  } else {
+    Kernel<QuantizedSumInitKernel, cpu>::Launch(s, n, out.data().dptr<int32_t>());
+  }
+  Kernel<QuantizedSumKernel, cpu>::Launch(s, n * k, k, weight.data().dptr<int8_t>(),
+      out.data().dptr<int32_t>(), shift);
+
+  Kernel<QuantizedBetaCKernel, cpu>::Launch(s, m * n, n, out.data().dptr<int32_t>());
 
   cblas_gemm_s8u8s32(CblasRowMajor,
                      CblasNoTrans,
@@ -109,19 +146,6 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
                      out.data().dptr<int32_t>(),
                      n,
                      &oc);
-
-  Kernel<QuantizationRangeForMultiplicationStruct, cpu>::Launch(s, 1,
-      out_data[1].data().dptr<float>(), out_data[2].data().dptr<float>(),
-      in_data[num_inputs].data().dptr<float>(),   in_data[num_inputs+1].data().dptr<float>(),
-      in_data[num_inputs+2].data().dptr<float>(), in_data[num_inputs+3].data().dptr<float>());
-
-  if (!param.no_bias) {
-    const NDArray& bias = in_data[2];
-    Kernel<QuantizedBiasAddKernel, cpu>::Launch(s, out.shape().Size(),
-        n, out.data().dptr<int32_t>(), bias.data().dptr<int8_t>(),
-        out_data[1].data().dptr<float>(), out_data[2].data().dptr<float>(),
-        in_data[7].data().dptr<float>(),  in_data[8].data().dptr<float>());
-  }
 }
 
 NNVM_REGISTER_OP(_contrib_quantized_fully_connected)
@@ -132,4 +156,3 @@ NNVM_REGISTER_OP(_contrib_quantized_fully_connected)
 }  // namespace op
 }  // namespace mxnet
 #endif
-
