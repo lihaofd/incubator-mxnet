@@ -88,7 +88,7 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
   Stream<cpu> *s = ctx.get_stream<cpu>();
   //  cblas_gemm_s8u8s32 required first matrix must be uint8
   //  shift data from int8(from -128 to 127) to uint8 (from 0 to 255)
-  Kernel<QuantizedShiftKernel, cpu>::Launch(s, m * k, data.data().dptr<int8_t>(), 
+  Kernel<QuantizedShiftKernel, cpu>::Launch(s, m * k, data.data().dptr<int8_t>(),
       shift_data.data().dptr<uint8_t>(), 128);
 
   cblas_gemm_s8u8s32(CblasRowMajor,
@@ -109,7 +109,7 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
                      out.data().dptr<int32_t>(),
                      n,
                      &oc);
-  
+
   Kernel<QuantizationRangeForMultiplicationStruct, cpu>::Launch(s, 1,
       out_data[1].data().dptr<float>(), out_data[2].data().dptr<float>(),
       in_data[num_inputs].data().dptr<float>(),   in_data[num_inputs+1].data().dptr<float>(),
