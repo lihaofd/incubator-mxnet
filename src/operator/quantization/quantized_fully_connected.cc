@@ -132,7 +132,6 @@ and max thresholds representing the threholds for quantizing the float32 output 
 .set_attr<nnvm::FInferType>("FInferType", QuantizedFullyConnectedType)
 .set_attr<FInferStorageType>("FInferStorageType", QuantizedFullyConnectedStorageType)
 .set_attr<FNeedRequantize>("FNeedRequantize", [](const NodeAttrs& attrs) { return true; })
-.add_argument("shiftdata", "NDArray-or-Symbol", "Input data.")
 .add_argument("data", "NDArray-or-Symbol", "Input data.")
 .add_argument("weight", "NDArray-or-Symbol", "weight.")
 .add_argument("bias", "NDArray-or-Symbol", "bias.")
