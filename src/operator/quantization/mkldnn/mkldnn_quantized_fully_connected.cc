@@ -50,6 +50,13 @@ struct QuantizedBiasAddKernel {
   }
 };
 
+struct QuantizedShiftKernel {
+  MSHADOW_XINLINE static void Map(int i, int8_t *in, uint8_t *out, int shift) {
+    out[i] = in[i] + shift;
+  }
+};
+
+
 template<typename SrcType>
 void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
                                           const OpContext &ctx,
@@ -78,11 +85,11 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
   MKL_INT32 oc = 0;
   const int m = dshape[0], n = wshape[0], k = dshape.ProdShape(1, dshape.ndim());
 
-  for (int i = 0; i < m * k; i++) {
-    //  cblas_gemm_s8u8s32 required first matrix must be uint8
-    //  shift data from int8(from -128 to 127) to uint8 (from 0 to 255)
-    shift_data.data().dptr<uint8_t>()[i] = data.data().dptr<int8_t>()[i] + 128;
-  }
+  Stream<cpu> *s = ctx.get_stream<cpu>();
+  //  cblas_gemm_s8u8s32 required first matrix must be uint8
+  //  shift data from int8(from -128 to 127) to uint8 (from 0 to 255)
+  Kernel<QuantizedShiftKernel, cpu>::Launch(s, m * k, data.data().dptr<int8_t>(), 
+      shift_data.data().dptr<uint8_t>(), 128);
 
   cblas_gemm_s8u8s32(CblasRowMajor,
                      CblasNoTrans,
@@ -102,19 +109,18 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
                      out.data().dptr<int32_t>(),
                      n,
                      &oc);
-
-  Stream<cpu> *s = ctx.get_stream<cpu>();
+  
   Kernel<QuantizationRangeForMultiplicationStruct, cpu>::Launch(s, 1,
-     out_data[1].data().dptr<float>(), out_data[2].data().dptr<float>(),
-     in_data[num_inputs].data().dptr<float>(),   in_data[num_inputs+1].data().dptr<float>(),
-     in_data[num_inputs+2].data().dptr<float>(), in_data[num_inputs+3].data().dptr<float>());
+      out_data[1].data().dptr<float>(), out_data[2].data().dptr<float>(),
+      in_data[num_inputs].data().dptr<float>(),   in_data[num_inputs+1].data().dptr<float>(),
+      in_data[num_inputs+2].data().dptr<float>(), in_data[num_inputs+3].data().dptr<float>());
 
   if (!param.no_bias) {
     const NDArray& bias = in_data[2];
     Kernel<QuantizedBiasAddKernel, cpu>::Launch(s, out.shape().Size(),
         n, out.data().dptr<int32_t>(), bias.data().dptr<int8_t>(),
         out_data[1].data().dptr<float>(), out_data[2].data().dptr<float>(),
-         in_data[7].data().dptr<float>(),  in_data[8].data().dptr<float>());
+        in_data[7].data().dptr<float>(),  in_data[8].data().dptr<float>());
   }
 }
 
