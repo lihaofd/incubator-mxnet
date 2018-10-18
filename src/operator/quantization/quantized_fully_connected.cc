@@ -36,7 +36,7 @@ bool QuantizedFullyConnectedShape(const nnvm::NodeAttrs& attrs,
   using namespace mshadow;
   uint32_t num_inputs = param.no_bias ? 2 : 3;
   CHECK_EQ(in_shape->size(), num_inputs * 3);
-  CHECK_EQ(out_shape->size(), 4U);
+  CHECK_EQ(out_shape->size(), 3U);
 
   CHECK(!shape_is_none(in_shape->at(0)))
     << "QuantizedFullyConnectedOp input data shape must be given";
@@ -55,7 +55,6 @@ bool QuantizedFullyConnectedShape(const nnvm::NodeAttrs& attrs,
   SHAPE_ASSIGN_CHECK(*out_shape, 0, TShape({dshape[0], wshape[0]}));
   SHAPE_ASSIGN_CHECK(*out_shape, 1, TShape({1}));
   SHAPE_ASSIGN_CHECK(*out_shape, 2, TShape({1}));
-  SHAPE_ASSIGN_CHECK(*out_shape, 3, dshape);
   return true;
 }
 
@@ -65,7 +64,7 @@ bool QuantizedFullyConnectedType(const nnvm::NodeAttrs& attrs,
   const FullyConnectedParam& param = nnvm::get<FullyConnectedParam>(attrs.parsed);
   uint32_t num_inputs = param.no_bias ? 2 : 3;
   CHECK_EQ(in_type->size(), num_inputs * 3);
-  CHECK_EQ(out_type->size(), 4U);
+  CHECK_EQ(out_type->size(), 3U);
 
   for (size_t i = 0; i < num_inputs; ++i) {
     TYPE_ASSIGN_CHECK(*in_type, i, mshadow::kInt8);
@@ -77,7 +76,6 @@ bool QuantizedFullyConnectedType(const nnvm::NodeAttrs& attrs,
   TYPE_ASSIGN_CHECK(*out_type, 0, mshadow::kInt32);
   TYPE_ASSIGN_CHECK(*out_type, 1, mshadow::kFloat32);
   TYPE_ASSIGN_CHECK(*out_type, 2, mshadow::kFloat32);
-  TYPE_ASSIGN_CHECK(*out_type, 3, mshadow::kUint8);
   return true;
 }
 
@@ -111,7 +109,7 @@ and max thresholds representing the threholds for quantizing the float32 output 
     const FullyConnectedParam& param = nnvm::get<FullyConnectedParam>(attrs.parsed);
     return param.no_bias? 6 : 9;
   })
-.set_num_outputs(4)
+.set_num_outputs(3)
 .set_attr_parser(ParamParser<FullyConnectedParam>)
 .set_attr<nnvm::FListInputNames>("FListInputNames",
   [](const NodeAttrs& attrs) {
@@ -126,7 +124,7 @@ and max thresholds representing the threholds for quantizing the float32 output 
   })
 .set_attr<nnvm::FListOutputNames>("FListOutputNames",
   [](const NodeAttrs& attrs) {
-    return std::vector<std::string>{"output", "min_output", "max_output", "shift_data"};
+    return std::vector<std::string>{"output", "min_output", "max_output"};
   })
 .set_attr<nnvm::FInferShape>("FInferShape", QuantizedFullyConnectedShape)
 .set_attr<nnvm::FInferType>("FInferType", QuantizedFullyConnectedType)

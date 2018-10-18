@@ -26,6 +26,10 @@
 namespace mxnet {
 namespace op {
 
+namespace qfc {
+enum QfcOpResource {kTempSpace};
+}
+
 struct QuantizedShiftKernel {
   MSHADOW_XINLINE static void Map(int i, int8_t *in, uint8_t *out, int shift) {
     out[i] = in[i] + shift;
@@ -88,11 +92,10 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
   using namespace mxnet_op;
   size_t num_inputs = param.no_bias ? 2 : 3;
   CHECK_EQ(in_data.size(),  num_inputs * 3);
-  CHECK_EQ(out_data.size(), 4U);
+  CHECK_EQ(out_data.size(), 3U);
   const NDArray& data = in_data[0];
   const NDArray& weight = in_data[1];
   const NDArray& out = out_data[0];
-  const NDArray& shift_data = out_data[3];
   TShape dshape = data.shape();
   TShape wshape = weight.shape();
   TShape oshape = out.shape();
@@ -108,8 +111,11 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
   //  cblas_gemm_s8u8s32 required first matrix must be uint8
   //  shift data from int8(from -128 to 127) to uint8 (from 0 to 255)
   int shift = 128;
+  Tensor<cpu, 1, uint8_t> shiftdata =
+    ctx.requested[qfc::kTempSpace].get_space_typed<cpu, 1, uint8_t>(
+      Shape1(m * k), s);
   Kernel<QuantizedShiftKernel, cpu>::Launch(s, m * k, data.data().dptr<int8_t>(),
-      shift_data.data().dptr<uint8_t>(), shift);
+      shiftdata.dptr_, shift);
   Kernel<QuantizationRangeForMultiplicationStruct, cpu>::Launch(s, 1,
       out_data[1].data().dptr<float>(), out_data[2].data().dptr<float>(),
       in_data[num_inputs].data().dptr<float>(), in_data[num_inputs+1].data().dptr<float>(),
@@ -136,7 +142,7 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
                      n,
                      k,
                      alpha,
-                     shift_data.data().dptr<uint8_t>(),
+                     shiftdata.dptr_,
                      k,
                      oa,
                      weight.data().dptr<int8_t>(),
@@ -150,8 +156,11 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
 
 NNVM_REGISTER_OP(_contrib_quantized_fully_connected)
 .set_attr<FComputeEx>("FComputeEx<cpu>",
-    MKLDNNQuantizedFullyConnectedForward<int8_t>);
-
+    MKLDNNQuantizedFullyConnectedForward<int8_t>)
+.set_attr<FResourceRequest>("FResourceRequest",
+  [](const NodeAttrs& attrs) {
+    return std::vector<ResourceRequest>{ResourceRequest::kTempSpace};
+  });
 
 }  // namespace op
 }  // namespace mxnet
