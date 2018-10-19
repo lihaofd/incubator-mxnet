@@ -26,8 +26,8 @@
 namespace mxnet {
 namespace op {
 
-namespace qfc {
-enum QfcOpResource {kTempSpace};
+namespace quantilizedfc {
+enum QuantilizedfcOpResource {kTempSpace};
 }
 
 struct QuantizedShiftKernel {
@@ -112,9 +112,9 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
   //  shift data from int8(from -128 to 127) to uint8 (from 0 to 255)
   int shift = 128;
   Tensor<cpu, 1, uint8_t> shiftdata =
-    ctx.requested[qfc::kTempSpace].get_space_typed<cpu, 1, uint8_t>(
+    ctx.requested[quantilizedfc::kTempSpace].get_space_typed<cpu, 1, uint8_t>(
       Shape1(m * k), s);
-  Kernel<QuantizedShiftKernel, cpu>::Launch(s, m * k, data.data().dptr<int8_t>(),
+  Kernel<QuantizedShiftKernel, cpu>::Launch(s, m * k, data.data().dptr<SrcType>(),
       shiftdata.dptr_, shift);
   Kernel<QuantizationRangeForMultiplicationStruct, cpu>::Launch(s, 1,
       out_data[1].data().dptr<float>(), out_data[2].data().dptr<float>(),
@@ -129,7 +129,7 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
   } else {
     Kernel<QuantizedSumInitKernel, cpu>::Launch(s, n, out.data().dptr<int32_t>());
   }
-  Kernel<QuantizedSumKernel, cpu>::Launch(s, n * k, k, weight.data().dptr<int8_t>(),
+  Kernel<QuantizedSumKernel, cpu>::Launch(s, n * k, k, weight.data().dptr<SrcType>(),
       out.data().dptr<int32_t>(), shift);
 
   Kernel<QuantizedBetaCKernel, cpu>::Launch(s, m * n, n, out.data().dptr<int32_t>());
@@ -145,7 +145,7 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
                      shiftdata.dptr_,
                      k,
                      oa,
-                     weight.data().dptr<int8_t>(),
+                     weight.data().dptr<SrcType>(),
                      k,
                      ob,
                      beta,

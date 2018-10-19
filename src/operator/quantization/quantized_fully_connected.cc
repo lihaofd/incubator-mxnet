@@ -80,10 +80,10 @@ bool QuantizedFullyConnectedType(const nnvm::NodeAttrs& attrs,
 }
 
 bool QuantizedFullyConnectedStorageType(const nnvm::NodeAttrs& attrs,
-                              const int dev_mask,
-                              DispatchMode* dispatch_mode,
-                              std::vector<int> *in_attrs,
-                              std::vector<int> *out_attrs) {
+                                        const int dev_mask,
+                                        DispatchMode* dispatch_mode,
+                                        std::vector<int> *in_attrs,
+                                        std::vector<int> *out_attrs) {
   *dispatch_mode = DispatchMode::kFCompute;
 #if MXNET_USE_MKLDNN == 1
   if (dev_mask == mshadow::cpu::kDevMask) {
