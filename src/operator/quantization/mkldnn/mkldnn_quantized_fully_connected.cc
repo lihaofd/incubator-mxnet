@@ -26,8 +26,8 @@
 namespace mxnet {
 namespace op {
 
-namespace quantilizedfc {
-enum QuantilizedfcOpResource {kTempSpace};
+namespace quantized_fullc {
+enum QuantizedFullyConnectedOpResource {kTempSpace};
 }
 
 struct QuantizedShiftKernel {
@@ -54,7 +54,7 @@ struct QuantizedSumInitKernelWithBias {
       out[i] = bias[i] * float_for_one_bias_quant /
                float_for_one_out_quant;
     } else {
-      LOG(INFO) << "WARNING: QuantizedBiasAddKernel float_for_one_out_quant is 0 !";
+      LOG(INFO) << "WARNING: QuantizedSumInitKernelWithBias float_for_one_out_quant is 0 !";
       out[i] = 0;
     }
   }
@@ -112,7 +112,7 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
   //  shift data from int8(from -128 to 127) to uint8 (from 0 to 255)
   int shift = 128;
   Tensor<cpu, 1, uint8_t> shiftdata =
-    ctx.requested[quantilizedfc::kTempSpace].get_space_typed<cpu, 1, uint8_t>(
+    ctx.requested[quantized_fullc::kTempSpace].get_space_typed<cpu, 1, uint8_t>(
       Shape1(m * k), s);
   Kernel<QuantizedShiftKernel, cpu>::Launch(s, m * k, data.data().dptr<SrcType>(),
       shiftdata.dptr_, shift);
