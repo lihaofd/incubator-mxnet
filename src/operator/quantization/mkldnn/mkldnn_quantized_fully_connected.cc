@@ -26,15 +26,9 @@
 namespace mxnet {
 namespace op {
 
-namespace quantized_fullc {
-enum QuantizedFullyConnectedOpResource {kTempSpace};
+namespace quantilizedfc {
+enum QuantilizedfcOpResource {kTempSpace};
 }
-
-struct QuantizedShiftKernel {
-  MSHADOW_XINLINE static void Map(int i, int8_t *in, uint8_t *out, int shift) {
-    out[i] = in[i] + shift;
-  }
-};
 
 struct QuantizedSumInitKernelWithBias {
   //  init sum data with bias for matrix b (n)
@@ -54,30 +48,9 @@ struct QuantizedSumInitKernelWithBias {
       out[i] = bias[i] * float_for_one_bias_quant /
                float_for_one_out_quant;
     } else {
-      LOG(INFO) << "WARNING: QuantizedSumInitKernelWithBias float_for_one_out_quant is 0 !";
+      LOG(INFO) << "WARNING: QuantizedBiasAddKernel float_for_one_out_quant is 0 !";
       out[i] = 0;
     }
-  }
-};
-
-struct QuantizedSumInitKernel {
-  //  init sum data for matrix b (n)
-  MSHADOW_XINLINE static void Map(int i, int32_t *out) {
-    out[i] = 0;
-  }
-};
-
-struct QuantizedSumKernel {
-  //  get sum data(n) for matrix b (n * k)
-  MSHADOW_XINLINE static void Map(int i, size_t k, int8_t *in, int32_t *out, int shift) {
-    out[i / k] -= shift * in[i];
-  }
-};
-
-struct QuantizedBetaCKernel {
-  //  prepare beta C (from n to m * n)
-  MSHADOW_XINLINE static void Map(int i, size_t n, int32_t *out) {
-    out[i] = out[i % n];
   }
 };
 
@@ -99,7 +72,10 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
   TShape dshape = data.shape();
   TShape wshape = weight.shape();
   TShape oshape = out.shape();
-
+  auto output_temp = out.data().dptr<int32_t>();
+  auto weight_temp = weight.data().dptr<SrcType>();
+  auto data_temp = data.data().dptr<SrcType>();
+  const int omp_threads = mxnet::engine::OpenMP::Get()->GetRecommendedOMPThreadCount();
   const float alpha = 1.0f;
   const float beta  = 1.0f;
   const CBLAS_OFFSET offsetc = CblasFixOffset;
@@ -112,10 +88,13 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
   //  shift data from int8(from -128 to 127) to uint8 (from 0 to 255)
   int shift = 128;
   Tensor<cpu, 1, uint8_t> shiftdata =
-    ctx.requested[quantized_fullc::kTempSpace].get_space_typed<cpu, 1, uint8_t>(
+    ctx.requested[quantilizedfc::kTempSpace].get_space_typed<cpu, 1, uint8_t>(
       Shape1(m * k), s);
-  Kernel<QuantizedShiftKernel, cpu>::Launch(s, m * k, data.data().dptr<SrcType>(),
-      shiftdata.dptr_, shift);
+  #pragma omp parallel for num_threads(omp_threads)
+  for (int i = 0; i < m * k; ++i) {
+    shiftdata.dptr_[i] = data_temp[i] + shift;
+  }
+
   Kernel<QuantizationRangeForMultiplicationStruct, cpu>::Launch(s, 1,
       out_data[1].data().dptr<float>(), out_data[2].data().dptr<float>(),
       in_data[num_inputs].data().dptr<float>(), in_data[num_inputs+1].data().dptr<float>(),
@@ -127,13 +106,20 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
         out_data[2].data().dptr<float>(), in_data[7].data().dptr<float>(),
         in_data[8].data().dptr<float>());
   } else {
-    Kernel<QuantizedSumInitKernel, cpu>::Launch(s, n, out.data().dptr<int32_t>());
+    #pragma omp parallel for num_threads(omp_threads)
+    for (int i = 0; i < m * n; ++i) {
+      output_temp[i] = 0;
+    }
   }
-  Kernel<QuantizedSumKernel, cpu>::Launch(s, n * k, k, weight.data().dptr<SrcType>(),
-      out.data().dptr<int32_t>(), shift);
 
-  Kernel<QuantizedBetaCKernel, cpu>::Launch(s, m * n, n, out.data().dptr<int32_t>());
-
+  #pragma omp parallel for num_threads(omp_threads)
+  for (int i = 0; i < n * k; ++i) {
+    output_temp[i / k] -= shift * weight_temp[i];
+  }
+  #pragma omp parallel for num_threads(omp_threads)
+  for (int i = n; i < m * n; ++i) {
+    output_temp[i] = output_temp[i % n];
+  }
   cblas_gemm_s8u8s32(CblasRowMajor,
                      CblasNoTrans,
                      CblasTrans,
