@@ -111,10 +111,11 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
       output_temp[i] = 0;
     }
   }
-
   #pragma omp parallel for num_threads(omp_threads)
-  for (int i = 0; i < n * k; ++i) {
-    output_temp[i / k] -= shift * weight_temp[i];
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < k; ++j) {
+      output_temp[i] -= shift * weight_temp[i * k + j];
+    }
   }
   #pragma omp parallel for num_threads(omp_threads)
   for (int i = n; i < m * n; ++i) {
