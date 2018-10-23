@@ -142,7 +142,7 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
                      n,
                      &oc);
   #else
-    LOG(FATAL) << "s8u8s32 is not supported by the BLAS library";
+    LOG(FATAL) << "s8u8s32 is only supported by MKL BLAS library";
   #endif
 }
 
