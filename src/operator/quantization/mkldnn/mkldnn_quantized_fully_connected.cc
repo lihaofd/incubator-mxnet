@@ -53,13 +53,14 @@ struct QuantizedSumInitKernelWithBias {
     }
   }
 };
-
 template<typename SrcType>
 void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
                                           const OpContext &ctx,
                                           const std::vector<NDArray> &in_data,
                                           const std::vector<OpReqType> &req,
                                           const std::vector<NDArray> &out_data) {
+  #if MSHADOW_USE_MKL == 1
+    // s8u8s32 implementation
   const FullyConnectedParam& param = nnvm::get<FullyConnectedParam>(attrs.parsed);
   using namespace mshadow;
   using namespace mxnet_op;
@@ -121,6 +122,7 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
   for (int i = n; i < m * n; ++i) {
     output_temp[i] = output_temp[i % n];
   }
+
   cblas_gemm_s8u8s32(CblasRowMajor,
                      CblasNoTrans,
                      CblasTrans,
@@ -139,6 +141,9 @@ void MKLDNNQuantizedFullyConnectedForward(const nnvm::NodeAttrs& attrs,
                      out.data().dptr<int32_t>(),
                      n,
                      &oc);
+  #else
+    LOG(FATAL) << "s8u8s32 is not supported by the BLAS library";
+  #endif
 }
 
 NNVM_REGISTER_OP(_contrib_quantized_fully_connected)
