@@ -39,6 +39,7 @@
 #include "./math_functions-inl.h"
 #include "./operator_common.h"
 #include "./rnn_impl.h"
+#include "./nn/mkldnn/mkldnn_rnn_impl.h"
 
 namespace mxnet {
 namespace op {
@@ -270,9 +271,15 @@ void RNNForwardInference(DType* ws,
                          int mode) {
   switch (mode) {
     case rnn_enum::kLstm:
-      LstmForwardInference<DType>(ws, state_outputs, num_layers, direction, seq_length,
-                                  batch_size, input_size, state_size, x_ptr, hx_ptr, cx_ptr,
-                                  w_ptr, b_ptr, y_ptr, hy_ptr, cy_ptr);
+      #if MXNET_USE_MKLDNN == 1
+        MKLDNNRNNForwardInference<DType>(ws, state_outputs, num_layers, direction, seq_length,
+                                          batch_size, input_size, state_size, x_ptr, hx_ptr,
+                                          cx_ptr, w_ptr, b_ptr, y_ptr, hy_ptr, cy_ptr, mode);
+      #else
+        LstmForwardInference<DType>(ws, state_outputs, num_layers, direction, seq_length,
+                                    batch_size, input_size, state_size, x_ptr, hx_ptr, cx_ptr,
+                                    w_ptr, b_ptr, y_ptr, hy_ptr, cy_ptr);
+      #endif
       break;
     case rnn_enum::kGru:
       GruForwardInference<DType>(ws, state_outputs, num_layers, direction, seq_length,

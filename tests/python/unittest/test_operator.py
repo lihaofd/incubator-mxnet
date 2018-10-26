@@ -89,7 +89,7 @@ def test_lstm_sym():
 @assert_raises_cudnn_disabled()
 def test_lstm_bidirectional():
     T, N, I, H = 5, 20, 800, 800
-    fused = mx.rnn.FusedRNNCell(H, num_layers=2, mode='lstm',
+    fused = mx.rnn.FusedRNNCell(H, num_layers=5, mode='lstm',
                                 bidirectional=True, get_next_state=True, prefix='')
 
     stack = mx.rnn.SequentialRNNCell()
@@ -101,6 +101,22 @@ def test_lstm_bidirectional():
                 mx.rnn.LSTMCell(H, prefix='l1_'),
                 mx.rnn.LSTMCell(H, prefix='r1_'),
                 output_prefix='bi_lstm_1_'))
+    
+    stack.add(mx.rnn.BidirectionalCell(
+                mx.rnn.LSTMCell(H, prefix='l2_'),
+                mx.rnn.LSTMCell(H, prefix='r2_'),
+                output_prefix='bi_lstm_2_'))
+
+    stack.add(mx.rnn.BidirectionalCell(
+                mx.rnn.LSTMCell(H, prefix='l3_'),
+                mx.rnn.LSTMCell(H, prefix='r3_'),
+                output_prefix='bi_lstm_3_'))
+
+    stack.add(mx.rnn.BidirectionalCell(
+                mx.rnn.LSTMCell(H, prefix='l4_'),
+                mx.rnn.LSTMCell(H, prefix='r4_'),
+                output_prefix='bi_lstm_4_'))
+    
 
     check_rnn_consistency(fused, stack, T, N, I, H, 'write')
     check_rnn_consistency(fused, stack, T, N, I, H, 'add')
@@ -125,7 +141,7 @@ def test_gru_sym():
 def test_gru_bidirectional():
     T, N, I, H = 5, 20, 800, 800
 
-    fused = mx.rnn.FusedRNNCell(H, num_layers=2, mode='gru',
+    fused = mx.rnn.FusedRNNCell(H, num_layers=5, mode='gru',
                                 bidirectional=True, get_next_state=True, prefix='')
 
     stack = mx.rnn.SequentialRNNCell()
@@ -138,6 +154,23 @@ def test_gru_bidirectional():
                 mx.rnn.GRUCell(H, prefix='l1_'),
                 mx.rnn.GRUCell(H, prefix='r1_'),
                 output_prefix='bi_gru_1_'))
+
+    stack.add(mx.rnn.BidirectionalCell(
+                mx.rnn.GRUCell(H, prefix='l2_'),
+                mx.rnn.GRUCell(H, prefix='r2_'),
+                output_prefix='bi_gru_2_'))
+
+
+    stack.add(mx.rnn.BidirectionalCell(
+                mx.rnn.GRUCell(H, prefix='l3_'),
+                mx.rnn.GRUCell(H, prefix='r3_'),
+                output_prefix='bi_gru_3_'))
+
+
+    stack.add(mx.rnn.BidirectionalCell(
+                mx.rnn.GRUCell(H, prefix='l4_'),
+                mx.rnn.GRUCell(H, prefix='r4_'),
+                output_prefix='bi_gru_4_'))
 
     check_rnn_consistency(fused, stack, T, N, I, H, 'write')
     check_rnn_consistency(fused, stack, T, N, I, H, 'add')
