@@ -57,7 +57,7 @@ def check_rnn_consistency(cell1, T, N, I, H):
         mod1.forward(batch, is_train=False)
         print >> fpa, mod1.get_outputs()[0][0][0][0]
 
-    print ("-- use time %.8s seconds for %d Intelrnn infer---\n" % (time.time()-startTime, runtimes))
+    print ("-- use time %.8s seconds for %d Intelrnn infer, samples/sec: %d---\n" % (time.time()-startTime, runtimes, N * runtimes/(time.time()-startTime)))
 
 def test_lstm():
     T, N, I, H = 300, 20, 800, 800
