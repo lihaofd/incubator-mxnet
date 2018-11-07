@@ -66,13 +66,10 @@ void MKLDNNRNNForwardInference(DType* ws,
 
   const int b_size = 2 * H * ngates * D;
   const int cell_size = N * H * D;
-  DType* y_cur_ptr = y_ptr;
   //  First layer
   int w_size = (I + H) * H * ngates * D;
   Tensor<cpu, 2, DType> x_0(x_ptr, Shape2(T * N, I));
-  Tensor<cpu, 3, DType> y_0(y_cur_ptr, Shape3(T, N, H * D));
-  DType* hx = hx_ptr;
-  DType* cx = cx_ptr;
+  Tensor<cpu, 3, DType> y(y_ptr, Shape3(T, N, H * D));
   DType* back_w_ptr = w_ptr;
   DType* back_b_ptr = b_ptr;
   const Tensor<cpu, 2, DType> wx_0(w_ptr, Shape2(ngates * H, I));
@@ -93,7 +90,6 @@ void MKLDNNRNNForwardInference(DType* ws,
   auto cpu_engine = CpuEngine::Get()->get_engine();
   auto null_memory_ = null_memory(cpu_engine);
   std::vector<primitive> rnn_net;
-  std::vector<primitive> rnn_net2;
 
   memory::dims src_layer_tz_0 = {T, N, I};
   memory::dims weights_layer_tz_0 = {1, D, I, ngates, H};  //  ldigo
@@ -111,23 +107,23 @@ void MKLDNNRNNForwardInference(DType* ws,
   std::vector<float> net_src_iter_0(D * ninputs * N * H, 0.0f);
   #pragma omp parallel for num_threads(omp_threads)
   for (int i = 0; i < N * H; i++) {
-    net_src_iter_0[i] = hx[i];
+    net_src_iter_0[i] = hx_ptr[i];
   }
   if (mode == mkldnn_rnn_enum::kLstm) {
     #pragma omp parallel for num_threads(omp_threads)
     for (int i = 0; i < N * H; i++) {
-      net_src_iter_0[i + N * H] = cx[i];
+      net_src_iter_0[i + N * H] = cx_ptr[i];
     }
   }
   if (D == 2) {
     #pragma omp parallel for num_threads(omp_threads)
     for (int i = 0; i < N * H; i++) {
-      net_src_iter_0[i + ninputs * N * H] = hx[i + N * H];
+      net_src_iter_0[i + ninputs * N * H] = hx_ptr[i + N * H];
     }
     if (mode == mkldnn_rnn_enum::kLstm) {
       #pragma omp parallel for num_threads(omp_threads)
       for (int i = 0; i < N * H; i++) {
-        net_src_iter_0[i + (ninputs + 1) * N * H] = cx[i + N * H];
+        net_src_iter_0[i + (ninputs + 1) * N * H] = cx_ptr[i + N * H];
       }
     }
   }
@@ -241,10 +237,11 @@ void MKLDNNRNNForwardInference(DType* ws,
   stream(stream::kind::eager).submit(rnn_net).wait();
   float* dst_y_0 = reinterpret_cast<float *> (dst_layer_memory_0.get_data_handle());
   float* dst_hcy_0 = reinterpret_cast<float *> (dst_iter_memory_0.get_data_handle());
+  auto user_src_layer_memory_l = dst_layer_memory_0;
   if (L == 1) {
     #pragma omp parallel for num_threads(omp_threads)
     for (size_t n = 0; n < T * N * H * D; n++) {
-      y_0.dptr_[n] = dst_y_0[n];
+      y.dptr_[n] = dst_y_0[n];
     }
   }
   if (state_outputs) {
@@ -271,7 +268,9 @@ void MKLDNNRNNForwardInference(DType* ws,
       }
     }
   }
-  if (L > 1) {  //  go to next L - 1 layers
+  //  go to next L - 1 layers
+  for (int l = 0; l < L - 1; l++) {
+    std::vector<primitive> rnn_net2;
     w_ptr += w_size;
     b_ptr += b_size;
     if (state_outputs) {
@@ -280,106 +279,97 @@ void MKLDNNRNNForwardInference(DType* ws,
     }
     I = H * D;
     w_size = (I + H) * H * ngates * D;
-    Tensor<cpu, 3, DType> y(y_cur_ptr, Shape3(T, N, H * D));
-
-    hx = hx_ptr + D * N * H;
+    hx_ptr += cell_size;
     if (mode == mkldnn_rnn_enum::kLstm) {
-      cx = cx_ptr + D * N * H;
+      cx_ptr += cell_size;
     }
     memory::dims src_layer_tz = {T, N, I};
-    memory::dims weights_layer_tz = {L - 1, D, I, ngates, H};  //  ldigo
-    memory::dims weights_iter_tz = {L - 1, D, H, ngates, H};  //  ldigo
-    memory::dims bias_tz = {L - 1, D, ngates, H};
+    memory::dims weights_layer_tz = {1, D, I, ngates, H};  //  ldigo
+    memory::dims weights_iter_tz = {1, D, H, ngates, H};  //  ldigo
+    memory::dims bias_tz = {1, D, ngates, H};
     memory::dims dst_layer_tz = {T, N, D * H};
-    memory::dims src_iter_tz = {L - 1, D, ninputs, N, H};  //  ldsnc
-    memory::dims dst_iter_tz = {L - 1, D, ninputs, N, H};  //  ldsnc
+    memory::dims src_iter_tz = {1, D, ninputs, N, H};  //  ldsnc
+    memory::dims dst_iter_tz = {1, D, ninputs, N, H};  //  ldsnc
 
-    std::vector<float> net_src_iter((L - 1) * D * ninputs * N * H, 0.0f);
-    std::vector<float> user_wei_layer((L - 1) * D * I * ngates * H, 0.0f);
-    std::vector<float> user_wei_iter((L - 1) * D * H * ngates * H, 0.0f);
-    std::vector<float> user_bias((L - 1) * D * ngates * H, 0.0f);
-    for (int l = 0; l < L - 1; l++) {
+    std::vector<float> net_src_iter(1 * D * ninputs * N * H, 0.0f);
+    std::vector<float> user_wei_layer(1 * D * I * ngates * H, 0.0f);
+    std::vector<float> user_wei_iter(1 * D * H * ngates * H, 0.0f);
+    std::vector<float> user_bias(1 * D * ngates * H, 0.0f);
+
+    #pragma omp parallel for num_threads(omp_threads)
+    for (int i = 0; i < N * H; i++) {
+      net_src_iter[i] = hx_ptr[i];
+    }
+    if (mode == mkldnn_rnn_enum::kLstm) {
       #pragma omp parallel for num_threads(omp_threads)
       for (int i = 0; i < N * H; i++) {
-        net_src_iter[l * D * ninputs * N * H + i] = hx[l * D * N * H + i];
+        net_src_iter[i + N * H] = cx_ptr[i];
+      }
+    }
+    if (D == 2) {
+      #pragma omp parallel for num_threads(omp_threads)
+      for (int i = 0; i < N * H; i++) {
+        net_src_iter[i + ninputs * N * H] = hx_ptr[i + N * H];
       }
       if (mode == mkldnn_rnn_enum::kLstm) {
         #pragma omp parallel for num_threads(omp_threads)
         for (int i = 0; i < N * H; i++) {
-          net_src_iter[l * D * ninputs * N * H + i + N * H] = cx[l * D * N * H + i];
+          net_src_iter[i + (ninputs + 1) * N * H] = cx_ptr[i + N * H];
         }
       }
-      if (D == 2) {
-        #pragma omp parallel for num_threads(omp_threads)
-        for (int i = 0; i < N * H; i++) {
-          net_src_iter[l * D * ninputs * N * H + i + ninputs * N * H] = hx[l * D * N * H + i + N * H];
-        }
-        if (mode == mkldnn_rnn_enum::kLstm) {
-          #pragma omp parallel for num_threads(omp_threads)
-          for (int i = 0; i < N * H; i++) {
-            net_src_iter[l * D * ninputs * N * H + i + (ninputs + 1) * N * H] = cx[l * D * N * H + i + N * H];
-          }
-        }
+    }
+    back_w_ptr = w_ptr;
+    back_b_ptr = b_ptr;
+    const Tensor<cpu, 2, DType> wx(w_ptr, Shape2(ngates * H, I));
+    const Tensor<cpu, 2, DType> wh(w_ptr + I * H * ngates, Shape2(ngates * H, H));
+    if (D == 2) {
+      back_w_ptr = w_ptr + ngates * H * (I + H);
+      back_b_ptr = b_ptr + ngates * H * 2;
+    }
+    const Tensor<cpu, 2, DType> back_wx(back_w_ptr , Shape2(ngates * H, I));
+    const Tensor<cpu, 2, DType> back_wh(back_w_ptr + I * H * ngates, Shape2(ngates * H, H));
+    const Tensor<cpu, 2, DType> bx(b_ptr, Shape2(ngates, H));
+    const Tensor<cpu, 2, DType> bh(b_ptr + H * ngates, Shape2(ngates, H));
+    const Tensor<cpu, 2, DType> back_bx(back_b_ptr, Shape2(ngates, H));
+    const Tensor<cpu, 2, DType> back_bh(back_b_ptr + H * ngates, Shape2(ngates, H));
+    #pragma omp parallel for num_threads(omp_threads)
+    for (int i = 0; i < I; i++) {
+      for (int j = 0; j < ngates * H; j++) {
+        user_wei_layer[i * ngates * H + j] = wx[j][i];
       }
-      back_w_ptr = w_ptr;
-      back_b_ptr = b_ptr;
-      const Tensor<cpu, 2, DType> wx(w_ptr, Shape2(ngates * H, I));
-      const Tensor<cpu, 2, DType> wh(w_ptr + I * H * ngates, Shape2(ngates * H, H));
-      if (D == 2) {
-        back_w_ptr = w_ptr + ngates * H * (I + H);
-        back_b_ptr = b_ptr + ngates * H * 2;
-      }
-      const Tensor<cpu, 2, DType> back_wx(back_w_ptr , Shape2(ngates * H, I));
-      const Tensor<cpu, 2, DType> back_wh(back_w_ptr + I * H * ngates, Shape2(ngates * H, H));
-
-      const Tensor<cpu, 2, DType> bx(b_ptr, Shape2(ngates, H));
-      const Tensor<cpu, 2, DType> bh(b_ptr + H * ngates, Shape2(ngates, H));
-      const Tensor<cpu, 2, DType> back_bx(back_b_ptr, Shape2(ngates, H));
-      const Tensor<cpu, 2, DType> back_bh(back_b_ptr + H * ngates, Shape2(ngates, H));
+    }
+    if (D == 2) {
       #pragma omp parallel for num_threads(omp_threads)
       for (int i = 0; i < I; i++) {
         for (int j = 0; j < ngates * H; j++) {
-          user_wei_layer[l * D * I * ngates * H + i * ngates * H + j] = wx[j][i];
+          user_wei_layer[I * ngates * H + i * ngates * H + j] = back_wx[j][i];
         }
       }
-      if (D == 2) {
-        #pragma omp parallel for num_threads(omp_threads)
-        for (int i = 0; i < I; i++) {
-          for (int j = 0; j < ngates * H; j++) {
-            user_wei_layer[l * D * I * ngates * H +
-              I * ngates * H + i * ngates * H + j] = back_wx[j][i];
-          }
-        }
+    }
+    #pragma omp parallel for num_threads(omp_threads)
+    for (int i = 0; i < H; i++) {
+      for (int j = 0; j < ngates * H; j++) {
+        user_wei_iter[i * ngates * H + j] = wh[j][i];
       }
+    }
+    if (D == 2) {
       #pragma omp parallel for num_threads(omp_threads)
       for (int i = 0; i < H; i++) {
         for (int j = 0; j < ngates * H; j++) {
-          user_wei_iter[l * D * H * ngates * H + i * ngates * H + j] = wh[j][i];
+          user_wei_iter[H * ngates * H + i * ngates * H + j] = back_wh[j][i];
         }
       }
-      if (D == 2) {
-        #pragma omp parallel for num_threads(omp_threads)
-        for (int i = 0; i < H; i++) {
-          for (int j = 0; j < ngates * H; j++) {
-            user_wei_iter[l * D * H * ngates * H
-              + H * ngates * H + i * ngates * H + j] = back_wh[j][i];
-          }
-        }
-      }
+    }
+    #pragma omp parallel for num_threads(omp_threads)
+    for (int j = 0; j < ngates * H; j++) {
+      user_bias[j] = bx.dptr_[j] + bh.dptr_[j];
+    }
+    if (D == 2) {
       #pragma omp parallel for num_threads(omp_threads)
       for (int j = 0; j < ngates * H; j++) {
-        user_bias[l * D * H * ngates + j] = bx.dptr_[j] + bh.dptr_[j];
+        user_bias[ngates * H + j] = back_bx.dptr_[j] + back_bh.dptr_[j];
       }
-      if (D == 2) {
-        #pragma omp parallel for num_threads(omp_threads)
-        for (int j = 0; j < ngates * H; j++) {
-          user_bias[l * D * H * ngates + ngates * H + j] = back_bx.dptr_[j] + back_bh.dptr_[j];
-        }
-      }
-      w_ptr = w_ptr + w_size;
-      b_ptr = b_ptr + b_size;
     }
-
     auto user_src_layer_md = mkldnn::memory::desc(
         { src_layer_tz }, mkldnn::memory::data_type::f32,
         mkldnn::memory::format::tnc);
@@ -436,40 +426,42 @@ void MKLDNNRNNForwardInference(DType* ws,
         = mkldnn::memory(prim_desc.dst_iter_primitive_desc());
 
     rnn_net2.push_back(
-        rnn_forward(prim_desc, dst_layer_memory_0,
+        rnn_forward(prim_desc, user_src_layer_memory_l,
                     user_src_iter_memory, user_wei_layer_memory,
                     user_wei_iter_memory, user_bias_memory,
                     dst_layer_memory, dst_iter_memory, null_memory_));
 
     stream(stream::kind::eager).submit(rnn_net2).wait();
+
     float* dst_y = reinterpret_cast<float *> (dst_layer_memory.get_data_handle());
     float* dst_hcy = reinterpret_cast<float *> (dst_iter_memory.get_data_handle());
-    #pragma omp parallel for num_threads(omp_threads)
-    for (size_t n = 0; n < T * N * H * D; n++) {
+    user_src_layer_memory_l = dst_layer_memory;
+    if (l == L - 2) {
+      #pragma omp parallel for num_threads(omp_threads)
+      for (size_t n = 0; n < T * N * H * D; n++) {
         y.dptr_[n] = dst_y[n];
+      }
     }
     if (state_outputs) {
-      for (int l = 0; l < L - 1; l++) {
+      #pragma omp parallel for num_threads(omp_threads)
+      for (size_t n = 0; n < N * H; n++) {
+        hy_ptr[n] = dst_hcy[n];
+      }
+      if (mode == mkldnn_rnn_enum::kLstm) {
         #pragma omp parallel for num_threads(omp_threads)
         for (size_t n = 0; n < N * H; n++) {
-          hy_ptr[l * D * N * H + n] = dst_hcy[l * D * ninputs * N * H + n];
+          cy_ptr[n] = dst_hcy[n + N * H];
+        }
+      }
+      if (D == 2) {
+        #pragma omp parallel for num_threads(omp_threads)
+        for (size_t n = 0; n < N * H; n++) {
+          hy_ptr[n + N * H] = dst_hcy[n + ninputs * N * H];
         }
         if (mode == mkldnn_rnn_enum::kLstm) {
           #pragma omp parallel for num_threads(omp_threads)
           for (size_t n = 0; n < N * H; n++) {
-            cy_ptr[l * D * N * H + n] = dst_hcy[l * D * ninputs * N * H + n + N * H];
-          }
-        }
-        if (D == 2) {
-          #pragma omp parallel for num_threads(omp_threads)
-          for (size_t n = 0; n < N * H; n++) {
-            hy_ptr[l * D * N * H + n + N * H] = dst_hcy[l * D * ninputs * N * H + n + ninputs * N * H];
-          }
-          if (mode == mkldnn_rnn_enum::kLstm) {
-            #pragma omp parallel for num_threads(omp_threads)
-            for (size_t n = 0; n < N * H; n++) {
-              cy_ptr[l * D * N * H + n + N * H] = dst_hcy[l * D * ninputs * N * H + n + (ninputs + 1) * N * H];
-            }
+            cy_ptr[n + N * H] = dst_hcy[n + (ninputs + 1) * N * H];
           }
         }
       }
