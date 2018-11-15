@@ -266,6 +266,25 @@ def test_rnnrelu_dropout():
     out = exe.forward(is_train=True)
     out[0].wait_to_read()
 
+@with_seed()
+def robust_check_backward_after_inference():
+    X = mx.sym.Variable('x')
+    Params = mx.sym.Variable('params')
+    HX = mx.sym.Variable('state')
+    T, N, I, H = 300, 20, 800, 800
+    rnn = mx.sym.RNN(data=X, parameters=Params, state=HX,
+                     state_size=H, num_layers=1, mode='gru', state_outputs=True, name='GRU')
+
+    out_grad = mx.nd.ones([T,N,H])
+    state_grad = mx.nd.ones([1,N,H])
+
+    exe = rnn.simple_bind(ctx=mx.cpu(), x=(T, N, I), grad_req='write')
+
+    exe.forward(is_train=False)
+    exe.backward(is_train=False, out_grads=[out_grad, state_grad])
+    print(exe.grad_arrays[0].asnumpy())
+
+
 def np_softmax(x, axis=-1, temperature=1.0):
     x = x - np.max(x, axis=axis, keepdims=True)
     x = np.exp(x/temperature)

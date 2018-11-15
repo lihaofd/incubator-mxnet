@@ -586,7 +586,7 @@ class RNNOp : public Operator{
                                            param_.seq_length_, param_.batch_size_,
                                            param_.state_size, param_.mode);
     if (!init_space_ || reserve_space_size_ != r_size) {
-      LOG(INFO) << "No reserved space from forward, please set is_train as True in Forward";
+      LOG(INFO) << "No reserved space from Forward, please set is_train as True in Forward";
       return;
     }
 
