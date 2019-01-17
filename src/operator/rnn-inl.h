@@ -167,6 +167,9 @@ struct RNNParam : public dmlc::Parameter<RNNParam> {
   dmlc::optional<int> projection_size;
   dmlc::optional<double> lstm_state_clip_min, lstm_state_clip_max;
   bool lstm_state_clip_nan;
+  #if MXNET_USE_MKLDNN == 1
+    std::vector<mkldnn::memory> weight_bias_memory;
+  #endif
 
   DMLC_DECLARE_PARAMETER(RNNParam) {
     DMLC_DECLARE_FIELD(state_size)
@@ -309,13 +312,17 @@ void RNNForwardInference(DType* ws,
                          DType* y_ptr,
                          DType* hy_ptr,
                          DType* cy_ptr,
+                         #if MXNET_USE_MKLDNN == 1
+                           std::vector<mkldnn::memory>* weight_bias_memory,
+                         #endif
                          int mode) {
   switch (mode) {
     case rnn_enum::kLstm:
       #if MXNET_USE_MKLDNN == 1
         MKLDNNRNNForward<DType>(state_outputs, num_layers, direction, seq_length,
                                 batch_size, input_size, state_size, x_ptr, hx_ptr,
-                                cx_ptr, w_ptr, b_ptr, y_ptr, hy_ptr, cy_ptr, mode);
+                                cx_ptr, w_ptr, b_ptr, y_ptr, hy_ptr, cy_ptr,
+                                weight_bias_memory, mode);
       #else
         LstmForwardInference<DType>(ws, state_outputs, num_layers, direction, seq_length,
                                     batch_size, input_size, state_size, x_ptr, hx_ptr, cx_ptr,
@@ -456,7 +463,6 @@ class RNNOp {
         cy_ptr = out_data[rnn_enum::kStateCellOut].dptr<DType>();
       }
     }
-
     // allocate temp space
     const size_t workspace_size = GetRNNWorkspaceSize(param_.seq_length_, param_.batch_size_,
                                                       param_.state_size, direction, param_.mode);
@@ -477,7 +483,6 @@ class RNNOp {
         reserve_space_size_ = r_size;
         init_space_ = true;
       }
-
       DType* reserve_space_ptr = static_cast<DType*>(reserve_space_.dptr);
       RNNForwardTraining<DType>(workspace.dptr_,
                                 reserve_space_ptr,
@@ -515,6 +520,9 @@ class RNNOp {
                                  y.dptr_,
                                  hy_ptr,
                                  cy_ptr,
+                               #if MXNET_USE_MKLDNN == 1
+                                 &param_.weight_bias_memory,
+                               #endif
                                  param_.mode);
     }
   }
@@ -630,8 +638,9 @@ class RNNOp {
                        param_.mode);
   }
 
- private:
   RNNParam param_;
+
+ private:
   bool init_space_;
   size_t reserve_space_size_;
   Storage::Handle reserve_space_;
@@ -667,13 +676,39 @@ static RNNOp<DType> &GetRNNOp(const RNNParam &param,
   return *it->second;
 }
 
+#if MXNET_USE_MKLDNN == 1
+template<typename DType>
+static RNNOp<DType> &GetMKLDNNRNNOp(const RNNParam &param,
+                                    const NDArray &weight,
+                                    const Context& ctx
+                                    ) {
+#if DMLC_CXX11_THREAD_LOCAL
+  static thread_local std::unordered_map<RNNSignature, std::shared_ptr<RNNOp<DType> >, OpHash> ops;
+#else
+  static MX_THREAD_LOCAL std::unordered_map<RNNSignature, std::shared_ptr<RNNOp<DType> >,
+                                            OpHash> ops;
+#endif
+  RNNSignature key(param);
+  key.AddSign(weight);
+  key.AddSign(ctx.dev_id);
+
+  auto it = ops.find(key);
+  if (it == ops.end()) {
+    std::shared_ptr<RNNOp<DType>> op(new RNNOp<DType>(param));
+    auto ins_ret = ops.insert(std::pair<RNNSignature, std::shared_ptr<RNNOp<DType> > >(key, op));
+    CHECK(ins_ret.second);
+    it = ins_ret.first;
+  }
+  return *it->second;
+}
+#endif
+
 template<typename xpu>
 void RNNCompute(const nnvm::NodeAttrs& attrs,
                 const OpContext& ctx,
                 const std::vector<TBlob>& inputs,
                 const std::vector<OpReqType>& req,
                 const std::vector<TBlob>& outputs) {
-
   const RNNParam& param = nnvm::get<RNNParam>(attrs.parsed);
   int dtype = inputs[rnn_enum::kData].type_flag_;
   int compute_type = (dtype == mshadow::kFloat16) ? mshadow::kFloat32 : dtype;
@@ -682,6 +717,140 @@ void RNNCompute(const nnvm::NodeAttrs& attrs,
       .Forward(ctx, inputs, req, outputs);
   });
 }
+
+#if MXNET_USE_MKLDNN == 1
+void RNNComputeExCPU(const nnvm::NodeAttrs& attrs,
+                     const OpContext &ctx,
+                     const std::vector<NDArray> &inputs,
+                     const std::vector<OpReqType> &req,
+                     const std::vector<NDArray> &outputs) {
+  RNNParam& param = (RNNParam&)nnvm::get<RNNParam>(attrs.parsed);
+  std::vector<TBlob> in_blobs;
+  std::vector<TBlob> out_blobs;
+  std::vector<NDArray> temp_ndarrays_i;
+  std::vector<NDArray> temp_ndarrays_o;
+  for (const NDArray& in : inputs) {
+    if (in.storage_type() == kDefaultStorage) {
+      temp_ndarrays_i.push_back(in.Reorder2Default());
+      in_blobs.emplace_back(temp_ndarrays_i.back().data());
+    } else {
+      in_blobs.emplace_back(in.data());
+    }
+  }
+
+  for (const NDArray& out : outputs) {
+    if (out.storage_type() == kDefaultStorage) {
+      temp_ndarrays_o.push_back(out.Reorder2Default());
+      out_blobs.emplace_back(temp_ndarrays_o.back().data());
+    } else {
+      out_blobs.emplace_back(out.data());
+    }
+  }
+  int dtype = in_blobs[rnn_enum::kData].type_flag_;
+  Stream<cpu> *s = ctx.get_stream<cpu>();
+  auto cpu_engine = CpuEngine::Get()->get_engine();
+
+  MSHADOW_REAL_TYPE_SWITCH(dtype, DType, {
+    RNNOp<DType> &RNNFwd =
+        GetMKLDNNRNNOp<DType>(param, inputs[rnn_enum::kParams], ctx.run_ctx.ctx);
+
+    int ngates = 0, nstates = 0;
+    GetMKLDNNAlgo(RNNFwd.param_.mode, &ngates, &nstates);
+    mkldnn::memory::data_type mkldnn_dtype = GetMKLDNNDataType<DType>();
+    int D = RNNFwd.param_.bidirectional ? 2 : 1;
+    Tensor<cpu, 3, DType> x = in_blobs[rnn_enum::kData].get<cpu, 3, DType>(s);
+    int I = x.shape_[2];
+    int H = RNNFwd.param_.state_size;
+    int L = RNNFwd.param_.num_layers;
+
+    if (RNNFwd.param_.weight_bias_memory.size() == 0) {
+      memory::dims weights_layer_tz_0 = {1, D, I, ngates, H};  //  ldigo
+      memory::dims weights_iter_tz_0 = {1, D, H, ngates, H};  //  ldigo
+      memory::dims bias_tz_0 = {1, D, ngates, H};
+
+      auto user_weight_layer_md_0 = mkldnn::memory::desc(
+          { weights_layer_tz_0 }, mkldnn_dtype, mkldnn::memory::format::ldigo);
+      auto user_weight_iter_md_0 = mkldnn::memory::desc(
+          { weights_iter_tz_0 }, mkldnn_dtype, mkldnn::memory::format::ldigo);
+      auto user_bias_md_0 = mkldnn::memory::desc({ bias_tz_0 },
+          mkldnn_dtype, mkldnn::memory::format::ldgo);
+
+      DType* weight_layer_0 = new DType[D * I * ngates * H];
+      auto user_weight_layer_memory_0
+          = mkldnn::memory({ user_weight_layer_md_0, cpu_engine }, weight_layer_0);
+      RNNFwd.param_.weight_bias_memory.push_back(user_weight_layer_memory_0);
+
+      DType* weight_iter_0 = new DType[D * H * ngates * H];
+      auto user_weight_iter_memory_0
+          = mkldnn::memory({ user_weight_iter_md_0, cpu_engine }, weight_iter_0);
+      RNNFwd.param_.weight_bias_memory.push_back(user_weight_iter_memory_0);
+
+      DType* bias_0 = new DType[D * ngates * H];
+      auto user_bias_memory_0 =
+          mkldnn::memory({ user_bias_md_0, cpu_engine }, bias_0);
+      RNNFwd.param_.weight_bias_memory.push_back(user_bias_memory_0);
+
+      if (L > 1 && D == 1) {
+        memory::dims weights_layer_tz = {L - 1, 1, H, ngates, H};  //  ldigo
+        memory::dims weights_iter_tz = {L - 1, 1, H, ngates, H};  //  ldigo
+        memory::dims bias_tz = {L - 1, 1, ngates, H};
+        auto user_weight_layer_md = mkldnn::memory::desc(
+            { weights_layer_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
+        auto user_weight_iter_md = mkldnn::memory::desc(
+            { weights_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
+        auto user_bias_md = mkldnn::memory::desc({ bias_tz },
+            mkldnn_dtype, mkldnn::memory::format::ldgo);
+
+        DType* weight_layer_n = new DType[(L - 1) * H * ngates * H];
+        auto user_weight_layer_memory_n
+            = mkldnn::memory({ user_weight_layer_md, cpu_engine }, weight_layer_n);
+        RNNFwd.param_.weight_bias_memory.push_back(user_weight_layer_memory_n);
+
+        DType* weight_iter_n = new DType[(L - 1) * H * ngates * H];
+        auto user_weight_iter_memory_n
+            = mkldnn::memory({ user_weight_iter_md, cpu_engine }, weight_iter_n);
+        RNNFwd.param_.weight_bias_memory.push_back(user_weight_iter_memory_n);
+
+        DType* bias_n = new DType[(L - 1) * ngates * H];
+        auto user_bias_memory_n =
+            mkldnn::memory({ user_bias_md, cpu_engine }, bias_n);
+        RNNFwd.param_.weight_bias_memory.push_back(user_bias_memory_n);
+      }
+
+      if (L > 1 && D == 2) {
+        memory::dims weights_layer_tz = {1, D, H * D, ngates, H};  //  ldigo
+        memory::dims weights_iter_tz = {1, D, H, ngates, H};  //  ldigo
+        memory::dims bias_tz = {1, D, ngates, H};
+        auto user_weight_layer_md = mkldnn::memory::desc(
+            { weights_layer_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
+        auto user_weight_iter_md = mkldnn::memory::desc(
+            { weights_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
+        auto user_bias_md = mkldnn::memory::desc({ bias_tz },
+            mkldnn_dtype, mkldnn::memory::format::ldgo);
+
+        for (int l = 0; l < L - 1; l++) {
+          DType* weight_layer_n = new DType[D * (H * D) * ngates * H];
+          auto user_weight_layer_memory_n
+              = mkldnn::memory({ user_weight_layer_md, cpu_engine }, weight_layer_n);
+          RNNFwd.param_.weight_bias_memory.push_back(user_weight_layer_memory_n);
+
+          DType* weight_iter_n = new DType[D * H * ngates * H];
+          auto user_weight_iter_memory_n
+              = mkldnn::memory({ user_weight_iter_md, cpu_engine }, weight_iter_n);
+          RNNFwd.param_.weight_bias_memory.push_back(user_weight_iter_memory_n);
+
+          DType* bias_n = new DType[D * ngates * H];
+          auto user_bias_memory_n =
+              mkldnn::memory({ user_bias_md, cpu_engine }, bias_n);
+          RNNFwd.param_.weight_bias_memory.push_back(user_bias_memory_n);
+        }
+      }
+    }
+
+    RNNFwd.Forward(ctx, in_blobs, req, out_blobs);
+  });
+}
+#endif
 
 template<typename xpu>
 void RNNGradCompute(const nnvm::NodeAttrs& attrs,

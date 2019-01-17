@@ -99,7 +99,7 @@ static bool RNNType(const nnvm::NodeAttrs& attrs,
   CHECK_GE(in_type->size(), 1U);
   int dtype = (*in_type)[0];
   CHECK_NE(dtype, -1) << "First input must have specified type";
-  for (index_t i = 0; i < in_type->size(); ++i) {
+  for (size_t i = 0; i < in_type->size(); ++i) {
     if ((*in_type)[i] == -1) {
       (*in_type)[i] = dtype;
     } else {
@@ -123,6 +123,10 @@ inline static bool RNNStorageType(const nnvm::NodeAttrs& attrs,
                                   std::vector<int> *in_attrs,
                                   std::vector<int> *out_attrs) {
   DispatchMode wanted_mode = DispatchMode::kFCompute;
+  #if MXNET_USE_MKLDNN == 1
+    wanted_mode = DispatchMode::kFComputeEx;
+  #endif
+
   return storage_type_assign(out_attrs, mxnet::kDefaultStorage,
                              dispatch_mode, wanted_mode);
 }
@@ -184,6 +188,9 @@ NNVM_REGISTER_OP(RNN)
 .set_attr<nnvm::FInferType>("FInferType", RNNType)
 .set_attr<FInferStorageType>("FInferStorageType", RNNStorageType)
 .set_attr<FCompute>("FCompute<cpu>", RNNCompute<cpu>)
+#if MXNET_USE_MKLDNN == 1
+.set_attr<FComputeEx>("FComputeEx<cpu>", RNNComputeExCPU)
+#endif
 .set_attr<nnvm::FGradient>("FGradient", RNNGrad{"_backward_RNN"})
 .set_attr<FResourceRequest>("FResourceRequest", [](const NodeAttrs& n) {
   return std::vector<ResourceRequest>{ResourceRequest::kTempSpace};
