@@ -43,9 +43,11 @@ static bool RNNShape(const nnvm::NodeAttrs& attrs,
   const RNNParam& param_ = nnvm::get<RNNParam>(attrs.parsed);
   using namespace mshadow;
   if (param_.mode == rnn_enum::kLstm) {
-    CHECK_EQ(in_shape->size(), 4U) << "Input:[data, parameters, state, cell_state]";
+    CHECK_EQ(in_shape->size(), 4U) << "Needed input:[data, parameters, state, cell_state],"
+        << " got in_shape->size(): " << in_shape->size();
   } else {
-    CHECK_EQ(in_shape->size(), 3U) << "Input:[data, parameters, state]";
+    CHECK_EQ(in_shape->size(), 3U) <<
+      "Needed input:[data, parameters, state], got in_shape->size(): " << in_shape->size();
   }
   const TShape &dshape = (*in_shape)[rnn_enum::kData];
   if (dshape.ndim() ==  0) return false;
