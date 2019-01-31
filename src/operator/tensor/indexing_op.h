@@ -296,6 +296,38 @@ inline bool SparseEmbeddingOpBackwardStorageType(const nnvm::NodeAttrs& attrs,
   return dispatched;
 }
 
+#define MIN(a, b) ((a < b) ? a : b)
+
+template<typename DType, typename IType>
+void take_axis0_clip_func(DType* out_data, const DType* in_data, const IType* idx,
+                     const int N, const int M, const int K) {
+  static int omp_threads = mxnet::engine::OpenMP::Get()->GetRecommendedOMPThreadCount();
+  const int blk_size = 64/sizeof(DType);
+  if (M == 1) {
+#pragma omp parallel for num_threads(omp_threads)
+    for (int blk = 0; blk < N; blk += blk_size) {
+      int blk_bound = MIN(blk + blk_size, N);
+      for (int i = blk; i < blk_bound; i++) {
+        int j = static_cast<int>(idx[i]);
+        if (j <= 0) j = 0;
+        else if (j >= K) j = K - 1;
+        out_data[i] = in_data[j];
+      }
+    }
+  } else {
+    const int len = M * sizeof (DType);
+#pragma omp parallel for num_threads(omp_threads)
+    for (int i = 0; i < N; i++) {
+      int j = static_cast<int>(idx[i]);
+      if (j <= 0) j = 0;
+      else if (j >= K) j = K - 1;
+      memcpy(reinterpret_cast<void*>(out_data + i * M),
+             reinterpret_cast<const void*>(in_data + j * M),
+             len);
+    }
+  }
+}
+
 /*! \brief name the struct Take instead of take
  * to avoid conflict with the take function in mshadow
  */
