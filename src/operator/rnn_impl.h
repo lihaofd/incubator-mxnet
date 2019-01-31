@@ -44,13 +44,6 @@
 namespace mxnet {
 namespace op {
 
-namespace rnn_enum {
-  enum RNNOpInputs {kData, kParams, kState, kStateCell};
-  enum RNNOpOutputs {kOut, kStateOut, kStateCellOut};
-  enum RNNModeType {kRnnRelu, kRnnTanh, kLstm, kGru};
-  enum RNNOpResource {kTempSpace};
-}
-
 template<typename DType>
 inline DType sigmoid(DType x) {
   return 1.0f / (1.0f + exp(-x));

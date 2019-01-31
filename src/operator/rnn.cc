@@ -24,6 +24,9 @@
  * \author Sebastian Bodenstein, Shu Zhang(shu.zhang@intel.com)
 */
 #include "./rnn-inl.h"
+#if MXNET_USE_MKLDNN ==1
+#include "./nn/mkldnn/mkldnn_rnn_impl.h"
+#endif
 
 namespace mxnet {
 namespace op {
@@ -104,7 +107,7 @@ static bool RNNType(const nnvm::NodeAttrs& attrs,
   for (size_t i = 0; i < in_type->size(); ++i) {
     if ((*in_type)[i] == -1) {
       (*in_type)[i] = dtype;
-    } else {
+    } else if (i <= 3) {
       UNIFORM_TYPE_CHECK((*in_type)[i], dtype, ListArguments(param_)[i]);
     }
   }
@@ -126,7 +129,9 @@ inline static bool RNNStorageType(const nnvm::NodeAttrs& attrs,
                                   std::vector<int> *out_attrs) {
   DispatchMode wanted_mode = DispatchMode::kFCompute;
   #if MXNET_USE_MKLDNN == 1
-    wanted_mode = DispatchMode::kFComputeEx;
+    if (dev_mask == mshadow::cpu::kDevMask) {
+      wanted_mode = DispatchMode::kFComputeEx;
+    }
   #endif
 
   return storage_type_assign(out_attrs, mxnet::kDefaultStorage,
@@ -190,9 +195,7 @@ NNVM_REGISTER_OP(RNN)
 .set_attr<nnvm::FInferType>("FInferType", RNNType)
 .set_attr<FInferStorageType>("FInferStorageType", RNNStorageType)
 .set_attr<FCompute>("FCompute<cpu>", RNNCompute<cpu>)
-#if MXNET_USE_MKLDNN == 1
 .set_attr<FComputeEx>("FComputeEx<cpu>", RNNComputeExCPU)
-#endif
 .set_attr<nnvm::FGradient>("FGradient", RNNGrad{"_backward_RNN"})
 .set_attr<FResourceRequest>("FResourceRequest", [](const NodeAttrs& n) {
   return std::vector<ResourceRequest>{ResourceRequest::kTempSpace};
