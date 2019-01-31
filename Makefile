@@ -15,6 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 
+export CC = icc
+export CXX = icpc
+
 ROOTDIR = $(CURDIR)
 TPARTYDIR = $(ROOTDIR)/3rdparty
 
@@ -86,6 +89,9 @@ include $(DMLC_CORE)/make/dmlc.mk
 # all tge possible warning tread
 WARNFLAGS= -Wall -Wsign-compare
 CFLAGS = -DMSHADOW_FORCE_STREAM $(WARNFLAGS)
+
+# for Intel compiler
+CFLAGS += -Qoption,cpp,--new_cilkfor
 
 ifeq ($(DEV), 1)
 	CFLAGS += -g -Werror
