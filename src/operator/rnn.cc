@@ -101,7 +101,7 @@ static bool RNNType(const nnvm::NodeAttrs& attrs,
                     std::vector<int> *in_type,
                     std::vector<int> *out_type) {
   const RNNParam& param_ = nnvm::get<RNNParam>(attrs.parsed);
-  CHECK_GE(in_type->size(), 1U);
+  CHECK_EQ(in_type->size(), 4U);
   int dtype = (*in_type)[0];
   CHECK_NE(dtype, -1) << "First input must have specified type";
   for (size_t i = 0; i < in_type->size(); ++i) {
@@ -197,6 +197,7 @@ NNVM_REGISTER_OP(RNN)
 .set_attr<FCompute>("FCompute<cpu>", RNNCompute<cpu>)
 #if MXNET_USE_MKLDNN ==1
 .set_attr<FComputeEx>("FComputeEx<cpu>", RNNComputeExCPU)
+.set_attr("TIsMKLDNN", true)
 #endif
 .set_attr<nnvm::FGradient>("FGradient", RNNGrad{"_backward_RNN"})
 .set_attr<FResourceRequest>("FResourceRequest", [](const NodeAttrs& n) {
