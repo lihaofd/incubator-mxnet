@@ -101,7 +101,11 @@ static bool RNNType(const nnvm::NodeAttrs& attrs,
                     std::vector<int> *in_type,
                     std::vector<int> *out_type) {
   const RNNParam& param_ = nnvm::get<RNNParam>(attrs.parsed);
-  CHECK_EQ(in_type->size(), 4U);
+  if (param_.mode == rnn_enum::kLstm) {
+    CHECK_EQ(in_type->size(), 4U);
+  } else {
+    CHECK_EQ(in_type->size(), 3U);
+  }
   int dtype = (*in_type)[0];
   CHECK_NE(dtype, -1) << "First input must have specified type";
   for (size_t i = 0; i < in_type->size(); ++i) {

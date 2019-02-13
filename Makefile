@@ -82,7 +82,9 @@ WARNFLAGS= -Wall -Wsign-compare
 CFLAGS = -DMSHADOW_FORCE_STREAM $(WARNFLAGS)
 
 # for Intel compiler
-CFLAGS += -Qoption,cpp,--new_cilkfor
+ifeq ($(CXX), icpc)
+        CFLAGS += -Qoption,cpp,--new_cilkfor
+endif
 
 ifeq ($(DEV), 1)
 	CFLAGS += -g -Werror
