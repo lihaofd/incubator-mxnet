@@ -295,11 +295,15 @@ void TakeOpForward<cpu>(const nnvm::NodeAttrs& attrs,
     MSHADOW_TYPE_SWITCH(inputs[1].type_flag_, IType, {  // index data type
       if (actual_axis == 0) {
         if (param.mode == take_::kClip) {
-          Kernel<TakeCPU<true>, cpu>::Launch(s, idxshape.Size(),
-                                             outputs[take_::kOut].dptr<DType>(),
-                                             inputs[take_::kArr].dptr<DType>(),
-                                             inputs[take_::kIdx].dptr<IType>(),
-                                             oshape.Size()/idxshape.Size(), arrshape[0]);
+          take_axis0_clip_func(outputs[take_::kOut].dptr<DType>(),
+                               inputs[take_::kArr].dptr<DType>(),
+                               inputs[take_::kIdx].dptr<IType>(),
+                               idxshape[0], oshape.Size()/idxshape.Size(), arrshape[0]);
+          // Kernel<TakeCPU<true>, cpu>::Launch(s, idxshape.Size(),
+          //                                    outputs[take_::kOut].dptr<DType>(),
+          //                                    inputs[take_::kArr].dptr<DType>(),
+          //                                    inputs[take_::kIdx].dptr<IType>(),
+          //                                    oshape.Size()/idxshape.Size(), arrshape[0]);
         } else {
           Kernel<TakeCPU<false>, cpu>::Launch(s, idxshape.Size(),
                                               outputs[take_::kOut].dptr<DType>(),
