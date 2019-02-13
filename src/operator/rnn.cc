@@ -21,7 +21,7 @@
  * Copyright (c) 2015 by Contributors
  * \file rnn.cc
  * \brief
- * \author Sebastian Bodenstein, Shu Zhang(shu.zhang@intel.com)
+ * \author Sebastian Bodenstein, Shu Zhang
 */
 #include "./rnn-inl.h"
 #if MXNET_USE_MKLDNN ==1
