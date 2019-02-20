@@ -48,6 +48,9 @@ enum ActivationOpInputs {kData};
 enum ActivationOpOutputs {kOut};
 enum ActivationOpResource {kTempSpace};
 enum ActivationOpType {kReLU, kSigmoid, kTanh, kSoftReLU, kSoftSign};
+
+// Get the number of inputs to the gradient depending on the activation type
+int GradNumInputs(int act_type);
 }  // activation
 
 struct ActivationParam : public dmlc::Parameter<ActivationParam> {
@@ -174,7 +177,7 @@ void ActivationGradComputeImpl(const nnvm::NodeAttrs& attrs, const OpContext &ct
       break;
     case activation::kSoftSign:
       ActivationBackward<xpu, mshadow_op::softsign, mshadow_op::softsign_grad>(
-          ctx, inputs[0], inputs[1], req[0], outputs[0]);
+          ctx, inputs[0], inputs[2], req[0], outputs[0]);
       break;
     default:
       LOG(FATAL) << "unknown activation type";
@@ -198,13 +201,9 @@ void ActivationGradCompute(const nnvm::NodeAttrs& attrs,
                            const std::vector<TBlob>& inputs,
                            const std::vector<OpReqType>& req,
                            const std::vector<TBlob>& outputs) {
-#if (MXNET_USE_CUDNN == 1 || MXNET_USE_MKLDNN == 1)
   const ActivationParam& param = nnvm::get<ActivationParam>(attrs.parsed);
-  bool relu = param.act_type == activation::kReLU;
-  CHECK_EQ(inputs.size(), relu ? 2U : 3U);
-#else
-  CHECK_EQ(inputs.size(), 2U);
-#endif
+  const int act_type = param.act_type;
+  CHECK_EQ(inputs.size(), activation::GradNumInputs(act_type));
   CHECK_EQ(outputs.size(), 1U);
   CHECK_EQ(req.size(), 1U);
   ActivationGradComputeImpl<xpu>(attrs, ctx, inputs, req, outputs);

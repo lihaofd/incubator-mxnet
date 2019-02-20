@@ -17,6 +17,7 @@
 
 import mxnet as mx
 import unittest
+import os
 import numpy as np
 from mxnet import gluon
 from mxnet.gluon import nn
@@ -55,16 +56,15 @@ def test_trainer():
             y.backward()
     trainer.step(1)
 
+    assert trainer._optimizer.param_dict == trainer._optimizer.param_dict
     assert (x.data(mx.cpu(1)).asnumpy() == -2).all()
 
     x.lr_mult = 0.5
-
     with mx.autograd.record():
         for w in x.list_data():
             y = w + 1
             y.backward()
     trainer.step(1)
-
     assert (x.data(mx.cpu(1)).asnumpy() == -4).all()
 
     trainer.save_states('test_trainer.states')
@@ -74,12 +74,13 @@ def test_trainer():
     if trainer._update_on_kvstore:
         dict_equ(trainer._kvstore._updater.states, states)
         assert trainer._optimizer == trainer._kvstore._updater.optimizer
+        # invalid usage of update and allreduce_grads if update_on_kvstore
+        assert_raises(AssertionError, trainer.update, 1)
+        assert_raises(AssertionError, trainer.allreduce_grads)
     else:
         for updater in trainer._updaters:
             dict_equ(updater.states, states)
         assert trainer._optimizer == trainer._updaters[0].optimizer
-    assert_raises(AssertionError, trainer.update, 1)
-    assert_raises(AssertionError, trainer.allreduce_grads)
 
     x = gluon.Parameter('x', shape=(10,))
     x.initialize(ctx=[mx.cpu(0), mx.cpu(1)], init='zeros')
@@ -98,6 +99,9 @@ def test_trainer():
 
 @with_seed()
 def test_trainer_save_load():
+    previous_update_on_kvstore = os.getenv('MXNET_UPDATE_ON_KVSTORE', "1")
+    os.putenv('MXNET_UPDATE_ON_KVSTORE', '1')
+
     x = gluon.Parameter('x', shape=(10,), lr_mult=1.0)
     x.initialize(ctx=[mx.cpu(0), mx.cpu(1)], init='zeros')
     trainer = gluon.Trainer([x], 'sgd', {'learning_rate': 0.1})
@@ -109,6 +113,25 @@ def test_trainer_save_load():
     assert trainer._kvstore._updater.optimizer._get_lr(0) == 0.1
     trainer.save_states('test_trainer_save_load.states')
     trainer.load_states('test_trainer_save_load.states')
+    x.lr_mult = 2.0
+    # check if parameter dict is correctly associated with optimizer after load_state
+    assert trainer._kvstore._updater.optimizer._get_lr(0) == 0.2
+    os.putenv('MXNET_UPDATE_ON_KVSTORE', previous_update_on_kvstore)
+
+@with_seed()
+def test_trainer_sparse_save_load():
+    x = gluon.Parameter('x', shape=(10, 1), lr_mult=1.0, stype='row_sparse')
+    x.initialize(ctx=[mx.cpu(0)], init='zeros')
+    trainer = gluon.Trainer([x], 'sgd', {'learning_rate': 0.1})
+    all_rows = mx.nd.arange(0, 10, ctx=mx.cpu(0))
+    with mx.autograd.record():
+        for w in x.list_row_sparse_data(all_rows):
+            y = w * 1
+            y.backward()
+    trainer.step(1)
+    assert trainer._kvstore._updater.optimizer._get_lr(0) == 0.1
+    trainer.save_states('test_trainer_sparse_save_load.states')
+    trainer.load_states('test_trainer_sparse_save_load.states')
     x.lr_mult = 2.0
     # check if parameter dict is correctly associated with optimizer after load_state
     assert trainer._kvstore._updater.optimizer._get_lr(0) == 0.2
@@ -159,42 +182,109 @@ def test_trainer_multi_layer_init():
     check_init([mx.cpu(1)])
 
 @with_seed()
-def test_trainer_save_load():
-    x = gluon.Parameter('x', shape=(10,), lr_mult=1.0)
-    x.initialize(ctx=[mx.cpu(0), mx.cpu(1)], init='zeros')
-    trainer = gluon.Trainer([x], 'sgd', {'learning_rate': 0.1})
-    with mx.autograd.record():
-        for w in x.list_data():
-            y = w + 1
-            y.backward()
-    trainer.step(1)
-    assert trainer._kvstore._updater.optimizer._get_lr(0) == 0.1
-    trainer.save_states('test_trainer_save_load.states')
-    trainer.load_states('test_trainer_save_load.states')
-    x.lr_mult = 2.0
-    # check if parameter dict is correctly associated with optimizer after load_state
-    assert trainer._kvstore._updater.optimizer._get_lr(0) == 0.2
+def test_trainer_reset_kv():
+    def check_trainer_reset_kv(kv):
+        params = gluon.ParameterDict()
+        x = params.get('x', shape=(10,), lr_mult=1.0)
+        params.initialize(ctx=[mx.cpu(0), mx.cpu(1)], init='zeros')
+        trainer = gluon.Trainer(params, 'sgd', {'learning_rate': 0.1}, kvstore=kv)
+        params.save('test_trainer_reset_kv.params')
+        with mx.autograd.record():
+            for w in x.list_data():
+                y = w + 1
+                y.backward()
+        trainer.step(1)
+        assert trainer._kvstore.type == kv
+        # load would reset kvstore
+        mx.nd.waitall()
+        params.load('test_trainer_reset_kv.params')
+        if trainer._update_on_kvstore:
+            # drop kvstore state if new parameters are loaded
+            assert trainer._kvstore is None
+            assert trainer._kv_initialized is False
+        with mx.autograd.record():
+            for w in x.list_data():
+                y = w + 1
+                y.backward()
+        trainer.step(1)
+        # the updated parameter should be based on the loaded checkpoint
+        assert (x.data(mx.cpu()) == -0.2).asnumpy().all()
+
+    kvs = ['local', 'device']
+    for kv in kvs:
+        check_trainer_reset_kv(kv)
 
 @with_seed()
-def test_trainer_reset_kv():
-    params = gluon.ParameterDict()
-    x = params.get('x', shape=(10,), lr_mult=1.0)
-    params.initialize(ctx=[mx.cpu(0), mx.cpu(1)], init='zeros')
-    trainer = gluon.Trainer(params, 'sgd', {'learning_rate': 0.1})
-    params.save('test_trainer_reset_kv.params')
+def test_trainer_sparse_kv():
+    def check_trainer_sparse_kv(kv, stype, grad_stype, update_on_kv, expected):
+        params = gluon.ParameterDict()
+        x = params.get('x', shape=(10,1), lr_mult=1.0, stype=stype, grad_stype=grad_stype)
+        params.initialize(ctx=[mx.cpu(0), mx.cpu(1)], init='zeros')
+        trainer = gluon.Trainer(params, 'sgd', {'learning_rate': 0.1},
+                                kvstore=kv, update_on_kvstore=update_on_kv)
+        all_rows = mx.nd.arange(0, 10, ctx=mx.cpu(0))
+        try:
+            ws = x.list_data() if stype == 'default' else x.list_row_sparse_data(all_rows)
+            with mx.autograd.record():
+                for w in ws:
+                    y = w + 1
+                    y.backward()
+            trainer.step(1)
+            assert trainer._kvstore.type == kv
+            assert trainer._kv_initialized
+            assert trainer._update_on_kvstore is expected
+            # the updated parameter should be based on the loaded checkpoint
+            mx.nd.waitall()
+            updated_w = x.data(mx.cpu(0)) if stype == 'default' else x.row_sparse_data(all_rows)
+            assert (updated_w == -0.2).asnumpy().all()
+        except Exception as err:
+            assert isinstance(err, expected)
+
+    kvs = ['local', 'device']
+    global_update_on_kvstore = bool(int(os.getenv('MXNET_UPDATE_ON_KVSTORE', "1")))
+    for kv in kvs:
+        check_trainer_sparse_kv(kv, 'default', 'default', True, True)
+        check_trainer_sparse_kv(kv, 'default', 'default', False, False)
+        check_trainer_sparse_kv(kv, 'default', 'default', None, global_update_on_kvstore)
+        check_trainer_sparse_kv(kv, 'default', 'row_sparse', None, False)
+        check_trainer_sparse_kv(kv, 'default', 'row_sparse', True, True)
+        check_trainer_sparse_kv(kv, 'default', 'row_sparse', False, False)
+        check_trainer_sparse_kv(kv, 'row_sparse', 'row_sparse', None, True)
+        check_trainer_sparse_kv(kv, 'row_sparse', 'row_sparse', False, ValueError)
+
+@with_seed()
+def test_trainer_lr_sched():
+    x = gluon.Parameter('x', shape=(10,))
+    x.initialize(ctx=[mx.cpu(0), mx.cpu(1)], init='zeros')
+    freq = 2
+    factor = 0.1
+    lr = 1
+    lr_sched = mx.lr_scheduler.FactorScheduler(freq, factor=factor, base_lr=lr)
+    trainer = gluon.Trainer([x], 'sgd', {'learning_rate': lr, 'lr_scheduler': lr_sched})
+    for i in range(10):
+        with mx.autograd.record():
+            for w in x.list_data():
+                y = w + 1
+                y.backward()
+        trainer.step(1)
+        if i % freq == 0:
+            assert trainer.learning_rate == lr, (lr, trainer.learning_rate, i)
+            lr *= factor
+    mx.nd.waitall()
+
+@with_seed()
+def test_trainer_invalid_lr_sched():
+    x = gluon.Parameter('x', shape=(10,))
+    x.initialize(ctx=[mx.cpu(0), mx.cpu(1)], init='zeros')
+    freq = 2
+    factor = 0.1
+    lr = 1
+    lr_sched = mx.lr_scheduler.FactorScheduler(freq, factor=factor, base_lr=lr)
+    invalid_trainer = gluon.Trainer([x], 'sgd', {'learning_rate': lr, 'lr_scheduler': lr_sched},
+                                    update_on_kvstore=False)
     with mx.autograd.record():
         for w in x.list_data():
             y = w + 1
             y.backward()
-    trainer.step(1)
-    # load would reset kvstore
-    params.load('test_trainer_reset_kv.params')
-    assert trainer._kvstore is None
-    assert trainer._kv_initialized is False
-    with mx.autograd.record():
-        for w in x.list_data():
-            y = w + 1
-            y.backward()
-    trainer.step(1)
-    # the updated parameter should be based on the loaded checkpoint
-    assert (x.data(mx.cpu()) == -0.2).asnumpy().all()
+    assert_raises(ValueError, invalid_trainer.step, 1)
+    mx.nd.waitall()

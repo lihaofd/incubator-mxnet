@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # Linear Regression
 
 In this tutorial we'll walk through how one can implement *linear regression* using MXNet APIs.
@@ -6,9 +23,9 @@ The function we are trying to learn is: *y = x<sub>1</sub>  +  2x<sub>2</sub>*, 
 
 ## Prerequisites
 
-To complete this tutorial, we need:  
+To complete this tutorial, we need:
 
-- MXNet. See the instructions for your operating system in [Setup and Installation](http://mxnet.io/install/index.html).  
+- MXNet. See the instructions for your operating system in [Setup and Installation](http://mxnet.io/install/index.html).
 
 - [Jupyter Notebook](http://jupyter.org/index.html).
 
@@ -32,7 +49,7 @@ logging.getLogger().setLevel(logging.DEBUG)
 ## Preparing the Data
 
 In MXNet, data is input via **Data Iterators**. Here we will illustrate
-how to encode a dataset into an iterator that MXNet can use. The data used in the example is made up of 2D data points with corresponding integer labels. 
+how to encode a dataset into an iterator that MXNet can use. The data used in the example is made up of 2D data points with corresponding integer labels.
 
 ```python
 #Training data
@@ -65,7 +82,7 @@ Documentation for iterators can be found [here](http://mxnet.io/api/python/io/io
 
 1. **IO:** The IO class as we already saw works on the data and carries out
    operations such as feeding data in batches and shuffling.
-   
+
 2. **Symbol:** The actual MXNet neural network is composed using symbols. MXNet has
    different types of symbols, including variable placeholders for input data,
    neural network layers, and operators that manipulate NDArrays.
@@ -77,7 +94,7 @@ Documentation for iterators can be found [here](http://mxnet.io/api/python/io/io
 
 ## Defining the Model
 
-MXNet uses **Symbols** for defining a model. Symbols are the building blocks 
+MXNet uses **Symbols** for defining a model. Symbols are the building blocks
 and make up various components of the model. Symbols are used to define:
 
 1. **Variables:** A variable is a placeholder for future data. This symbol is used
@@ -147,7 +164,7 @@ model = mx.mod.Module(
 We can visualize the network we created by plotting it:
 
 ```python
-mx.viz.plot_network(symbol=lro)
+mx.viz.plot_network(symbol=lro, node_attrs={"shape":"oval","fixedsize":"false"})
 ```
 
 ## Training the model
@@ -161,7 +178,7 @@ model.fit(train_iter, eval_iter,
             optimizer_params={'learning_rate':0.01, 'momentum': 0.9},
             num_epoch=20,
             eval_metric='mse',
-            batch_end_callback = mx.callback.Speedometer(batch_size, 2))	    
+            batch_end_callback = mx.callback.Speedometer(batch_size, 2))
 ```
 
 ## Using a trained model: (Testing and Inference)
@@ -193,6 +210,6 @@ model.score(eval_iter, metric)
 ```
 
 We can also create a custom metric and use it to evaluate a model. More
-information on metrics can be found in the [API documentation](http://mxnet.io/api/python/model.html#evaluation-metric-api-reference).
+information on metrics can be found in the [API documentation](http://mxnet.incubator.apache.org/api/python/metric/metric.html).
 
 <!-- INSERT SOURCE DOWNLOAD BUTTONS -->

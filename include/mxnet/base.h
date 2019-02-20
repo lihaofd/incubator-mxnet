@@ -25,47 +25,18 @@
 #ifndef MXNET_BASE_H_
 #define MXNET_BASE_H_
 
-#include <dmlc/base.h>
-#include <dmlc/io.h>
-#include <dmlc/type_traits.h>
-#include <dmlc/parameter.h>
-#include <mshadow/tensor.h>
-// nnvm headers for symbolic construction.
-#include <nnvm/op.h>
-#include <nnvm/tuple.h>
-#include <nnvm/symbolic.h>
+#include "dmlc/base.h"
 #include <string>
+#include "dmlc/io.h"
+#include "dmlc/type_traits.h"
+#include "dmlc/parameter.h"
+#include "mshadow/tensor.h"
+// nnvm headers for symbolic construction.
+#include "nnvm/op.h"
+#include "nnvm/tuple.h"
+#include "nnvm/symbolic.h"
+#include "libinfo.h"
 
-/*!
- *\brief whether to use opencv support
- */
-#ifndef MXNET_USE_OPENCV
-#define MXNET_USE_OPENCV 1
-#endif
-
-/*!
- *\brief whether to use cuda support
- */
-#ifndef MXNET_USE_CUDA
-#define MXNET_USE_CUDA MSHADOW_USE_CUDA
-#endif
-
-/*!
- *\brief whether to use cudnn library for convolution
- */
-#ifndef MXNET_USE_CUDNN
-#define MXNET_USE_CUDNN MSHADOW_USE_CUDNN
-#endif
-
-/*!
- *\brief whether to use cusolver library
- */
-#ifndef MXNET_USE_CUSOLVER
-#define MXNET_USE_CUSOLVER MSHADOW_USE_CUSOLVER
-#endif
-
-/*! \brief Error message for using gpu when MXNET_USE_CUDA==0 */
-#define MXNET_GPU_NOT_ENABLED_ERROR  "GPU is not enabled"
 
 /*!
  * \brief define compatible keywords in g++
@@ -102,7 +73,7 @@
 /*! \brief major version */
 #define MXNET_MAJOR 1
 /*! \brief minor version */
-#define MXNET_MINOR 3
+#define MXNET_MINOR 5
 /*! \brief patch version */
 #define MXNET_PATCH 0
 /*! \brief mxnet version */
@@ -153,10 +124,10 @@ struct Context {
     return dev_type;
   }
   /*!
-   * \brief Returns dev_id for kGPU, 0 otherwise
+   * \brief Returns dev_id for kGPU and kCPUPinned, 0 otherwise
    */
   inline int real_dev_id() const {
-    if (dev_type == kGPU) return dev_id;
+    if (dev_type == kCPUPinned || dev_type == kGPU) return dev_id;
     return 0;
   }
   /*!
@@ -223,6 +194,14 @@ struct Context {
    */
   inline static int32_t GetGPUCount();
   /*!
+   * \brief get the free and total available memory on a GPU
+   * \param dev the GPU number to query
+   * \param free_mem pointer to the uint64_t holding free GPU memory
+   * \param total_mem pointer to the uint64_t holding total GPU memory
+   * \return No return value
+   */
+  inline static void GetGPUMemoryInformation(int dev, uint64_t *free, uint64_t *total);
+  /*!
    * Create a pinned CPU context.
    * \param dev_id the device id for corresponding GPU.
    * \return Pinned CPU context. -1 for current GPU.
@@ -253,6 +232,10 @@ struct RunContext {
    * \brief the stream of the device, can be NULL or Stream<gpu>* in GPU mode
    */
   void *stream;
+  /*!
+   * \brief indicator of whether this execution is run in bulk mode
+   */
+  bool is_bulk;
   /*!
    * \brief get mshadow stream from Context
    * \return the mshadow stream
@@ -326,6 +309,35 @@ inline int32_t Context::GetGPUCount() {
 #endif
 }
 
+inline void Context::GetGPUMemoryInformation(int dev, uint64_t *free_mem,
+                                             uint64_t *total_mem) {
+#if MXNET_USE_CUDA
+
+  size_t memF, memT;
+  cudaError_t e;
+
+  int curDevice;
+  e = cudaGetDevice(&curDevice);
+  CHECK_EQ(e, cudaSuccess) << " CUDA: " << cudaGetErrorString(e);
+
+  e = cudaSetDevice(dev);
+  CHECK_EQ(e, cudaSuccess) << " CUDA: " << cudaGetErrorString(e);
+
+  e = cudaMemGetInfo(&memF, &memT);
+  CHECK_EQ(e, cudaSuccess) << " CUDA: " << cudaGetErrorString(e);
+
+  e = cudaSetDevice(curDevice);
+  CHECK_EQ(e, cudaSuccess) << " CUDA: " << cudaGetErrorString(e);
+
+  *free_mem = static_cast<uint64_t>(memF);
+  *total_mem = static_cast<uint64_t>(memT);
+
+#else
+  LOG(FATAL)
+      << "This call is only supported for MXNet built with CUDA support.";
+#endif
+}
+
 inline Context Context::FromString(const std::string& str) {
   Context ret;
   try {
@@ -375,6 +387,7 @@ inline std::ostream& operator<<(std::ostream &out, const Context &ctx) {
 #define MXNET_DESCRIBE(...) describe(__VA_ARGS__ "\n\nFrom:" __FILE__ ":" STRINGIZE(__LINE__))
 #define ADD_FILELINE "\n\nDefined in " __FILE__ ":L" STRINGIZE(__LINE__)
 
+
 #if MXNET_USE_MKLDNN == 1
 constexpr size_t kMKLDNNAlign = 64;
 #endif
@@ -390,7 +403,14 @@ template<> struct hash<mxnet::Context> {
     return res;
   }
 };
+
+#if __cplusplus < 201402L && !defined(_MSC_VER)
+template<typename T, typename... Args>
+inline std::unique_ptr<T> make_unique(Args&&... args) {
+  return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
 }
+#endif
+}  // namespace std
 
 #include "./tensor_blob.h"
 //! \endcond

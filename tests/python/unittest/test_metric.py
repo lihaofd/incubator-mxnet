@@ -18,6 +18,8 @@
 import mxnet as mx
 import numpy as np
 import json
+from common import with_seed
+from copy import deepcopy
 
 def check_metric(metric, *args, **kwargs):
     metric = mx.metric.create(metric, *args, **kwargs)
@@ -29,12 +31,74 @@ def check_metric(metric, *args, **kwargs):
 def test_metrics():
     check_metric('acc', axis=0)
     check_metric('f1')
+    check_metric('mcc')
     check_metric('perplexity', -1)
     check_metric('pearsonr')
     check_metric('nll_loss')
     check_metric('loss')
     composite = mx.metric.create(['acc', 'f1'])
     check_metric(composite)
+
+def _check_global_metric(metric, *args, **kwargs):
+    def _create_pred_label():
+        if use_same_shape:
+            pred = mx.nd.random.uniform(0, 1, shape=shape)
+            label = mx.nd.random.uniform(0, 1, shape=shape)
+        else:
+            # Make a random prediction
+            idx = np.random.rand(*shape).argsort(1)
+            pred = mx.nd.array(1 - 0.1 * idx)
+            # Label is half 1 and half 0
+            # Setting all 0s or all 1s would make either
+            # MCC or F1 metrics always produce 0
+            label = mx.nd.ones(shape[0])
+            label[:shape[0] // 2] = 0
+        return pred, label
+
+    shape = kwargs.pop('shape', (10,10))
+    use_same_shape = kwargs.pop('use_same_shape', False)
+    m1 = mx.metric.create(metric, *args, **kwargs)
+    m2 = deepcopy(m1)
+    # check that global stats are not reset when calling
+    # reset_local()
+    for i in range(10):
+        pred, label = _create_pred_label()
+        m1.update([label], [pred])
+        m1.reset_local()
+        m2.update([label], [pred])
+    assert m1.get_global() == m2.get()
+
+    # check that reset_local() properly resets the local state
+    m1.reset_local()
+    m2.reset()
+    pred, label = _create_pred_label()
+    m1.update([label], [pred])
+    m1.reset_local()
+    pred, label = _create_pred_label()
+    m1.update([label], [pred])
+    m2.update([label], [pred])
+    assert m1.get() == m2.get()
+
+@with_seed()
+def test_global_metric():
+    _check_global_metric('acc')
+    _check_global_metric('TopKAccuracy', top_k=3)
+    _check_global_metric('f1', shape=(10,2))
+    _check_global_metric('f1', shape=(10,2), average='micro')
+    _check_global_metric('mcc', shape=(10,2))
+    _check_global_metric('mcc', shape=(10,2), average='micro')
+    _check_global_metric('perplexity', -1)
+    _check_global_metric('pearsonr', use_same_shape=True)
+    _check_global_metric('nll_loss')
+    _check_global_metric('loss')
+    _check_global_metric('ce')
+    _check_global_metric('mae', use_same_shape=True)
+    _check_global_metric('mse', use_same_shape=True)
+    _check_global_metric('rmse', use_same_shape=True)
+    def custom_metric(label, pred):
+        return np.mean(np.abs(label-pred))
+    _check_global_metric(custom_metric, use_same_shape=True)
+    _check_global_metric(['acc', 'f1'], shape=(10,2))
 
 def test_nll_loss():
     metric = mx.metric.create('nll_loss')
@@ -121,6 +185,54 @@ def test_f1():
     fscore_total = 2. * (1 + 1) / (2 * (1 + 1) + (1 + 0) + (0 + 0))
     np.testing.assert_almost_equal(microF1.get()[1], fscore_total)
     np.testing.assert_almost_equal(macroF1.get()[1], (fscore1 + fscore2) / 2.)
+
+def test_mcc():
+    microMCC = mx.metric.create("mcc", average="micro")
+    macroMCC = mx.metric.MCC(average="macro")
+
+    assert np.isnan(microMCC.get()[1])
+    assert np.isnan(macroMCC.get()[1])
+
+    # check divide by zero
+    pred = mx.nd.array([[0.9, 0.1],
+                        [0.8, 0.2]])
+    label = mx.nd.array([0, 0])
+    microMCC.update([label], [pred])
+    macroMCC.update([label], [pred])
+    assert microMCC.get()[1] == 0.0
+    assert macroMCC.get()[1] == 0.0
+    microMCC.reset()
+    macroMCC.reset()
+
+    pred11 = mx.nd.array([[0.1, 0.9],
+                        [0.5, 0.5]])
+    label11 = mx.nd.array([1, 0])
+    pred12 = mx.nd.array([[0.85, 0.15],
+                        [1.0, 0.0]])
+    label12 = mx.nd.array([1, 0])
+    pred21 = mx.nd.array([[0.6, 0.4]])
+    label21 = mx.nd.array([0])
+    pred22 = mx.nd.array([[0.2, 0.8]])
+    label22 = mx.nd.array([1])
+    microMCC.update([label11, label12], [pred11, pred12])
+    macroMCC.update([label11, label12], [pred11, pred12])
+    assert microMCC.num_inst == 4
+    assert macroMCC.num_inst == 1
+    tp1 = 1; fp1 = 0; fn1 = 1; tn1=2
+    mcc1 = (tp1*tn1 - fp1*fn1) / np.sqrt((tp1+fp1)*(tp1+fn1)*(tn1+fp1)*(tn1+fn1))
+    np.testing.assert_almost_equal(microMCC.get()[1], mcc1)
+    np.testing.assert_almost_equal(macroMCC.get()[1], mcc1)
+
+    microMCC.update([label21, label22], [pred21, pred22])
+    macroMCC.update([label21, label22], [pred21, pred22])
+    assert microMCC.num_inst == 6
+    assert macroMCC.num_inst == 2
+    tp2 = 1; fp2 = 0; fn2 = 0; tn2=1
+    mcc2 = (tp2*tn2 - fp2*fn2) / np.sqrt((tp2+fp2)*(tp2+fn2)*(tn2+fp2)*(tn2+fn2))
+    tpT = tp1+tp2; fpT = fp1+fp2; fnT = fn1+fn2; tnT = tn1+tn2;
+    mccT = (tpT*tnT - fpT*fnT) / np.sqrt((tpT+fpT)*(tpT+fnT)*(tnT+fpT)*(tnT+fnT))
+    np.testing.assert_almost_equal(microMCC.get()[1], mccT)
+    np.testing.assert_almost_equal(macroMCC.get()[1], .5*(mcc1+mcc2))
 
 def test_perplexity():
     pred = mx.nd.array([[0.8, 0.2], [0.2, 0.8], [0, 1.]])

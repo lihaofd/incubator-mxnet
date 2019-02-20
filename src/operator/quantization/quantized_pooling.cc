@@ -23,6 +23,9 @@
 */
 #include <mxnet/op_attr_types.h>
 #include "../nn/pooling-inl.h"
+#if MXNET_USE_MKLDNN == 1
+#include "../nn/mkldnn/mkldnn_pooling-inl.h"
+#endif
 
 namespace mxnet {
 namespace op {
@@ -37,6 +40,9 @@ bool QuantizedPoolingShape(const nnvm::NodeAttrs& attrs,
   CHECK_EQ(dshape.ndim(), 4U)
       << "quantized_pooling: Input data should be 4D in "
       << "(batch, channel, y, x)";
+  int layout = param.GetLayout(dshape.ndim());
+  CHECK_EQ(layout, mshadow::kNCHW)
+      << "QuantizedPoolingOp only supports NCHW layout for now, saw " << layout;
   // NCHW layout
   const int N = 0, H = 2, W = 3, C = 1;
   TShape oshape(4);
@@ -49,17 +55,30 @@ bool QuantizedPoolingShape(const nnvm::NodeAttrs& attrs,
       << "kernel size (" << param.kernel[1]
       << ") exceeds input (" << dshape[W]
       << " padded to " << (dshape[W] + 2*param.pad[1]) << ")";
-  // only support valid convention
+
   oshape[N] = dshape[N];
   oshape[C] = dshape[C];
   if (param.global_pool) {
     oshape[H] = 1;
     oshape[W] = 1;
   } else {
-    oshape[H] = 1 + (dshape[H] + 2 * param.pad[0] - param.kernel[0]) /
-        param.stride[0];
-    oshape[W] = 1 + (dshape[W] + 2 * param.pad[1] - param.kernel[1]) /
-        param.stride[1];
+    if (param.pooling_convention == pool_enum::kValid) {
+      oshape[H] = 1 +
+                  (dshape[H] + 2 * param.pad[0] - param.kernel[0]) /
+                      param.stride[0];
+      oshape[W] = 1 +
+                  (dshape[W] + 2 * param.pad[1] - param.kernel[1]) /
+                      param.stride[1];
+    } else {
+      oshape[H] = 1 + static_cast<int>(std::ceil(
+                          static_cast<float>(dshape[H] + 2 * param.pad[0] -
+                                             param.kernel[0]) /
+                          param.stride[0]));
+      oshape[W] = 1 + static_cast<int>(std::ceil(
+                          static_cast<float>(dshape[W] + 2 * param.pad[1] -
+                                             param.kernel[1]) /
+                          param.stride[1]));
+    }
   }
 
   SHAPE_ASSIGN_CHECK(*in_shape, 1, TShape{1});
@@ -79,8 +98,12 @@ bool QuantizedPoolingType(const nnvm::NodeAttrs& attrs,
   CHECK_EQ(in_type->size(), 3U);
   CHECK_EQ(out_type->size(), 3U);
   if (param.pool_type == pool_enum::kMaxPooling || param.pool_type == pool_enum::kAvgPooling) {
+#if MXNET_USE_MKLDNN  == 1
+    TYPE_ASSIGN_CHECK(*out_type, 0, (*in_type)[0]);
+#else
     TYPE_ASSIGN_CHECK(*in_type, 0, mshadow::kInt8);
     TYPE_ASSIGN_CHECK(*out_type, 0, mshadow::kInt8);
+#endif
   } else {
     LOG(FATAL) << "QuantizedPoolingOp only supports pool_type=max/avg for now";
   }
@@ -88,6 +111,27 @@ bool QuantizedPoolingType(const nnvm::NodeAttrs& attrs,
   TYPE_ASSIGN_CHECK(*in_type, 2, mshadow::kFloat32);
   TYPE_ASSIGN_CHECK(*out_type, 1, mshadow::kFloat32);
   TYPE_ASSIGN_CHECK(*out_type, 2, mshadow::kFloat32);
+  return true;
+}
+
+inline static bool QuantizedPoolingStorageType(const nnvm::NodeAttrs &attrs,
+                                               const int dev_mask,
+                                               DispatchMode *dispatch_mode,
+                                               std::vector<int> *in_attrs,
+                                               std::vector<int> *out_attrs) {
+  CHECK_EQ(in_attrs->size(), 3);
+
+  *dispatch_mode = DispatchMode::kFCompute;
+#if MXNET_USE_MKLDNN == 1
+  const PoolingParam &param = nnvm::get<PoolingParam>(attrs.parsed);
+  if (dev_mask == mshadow::cpu::kDevMask && SupportMKLDNNPooling(param)) {
+    *dispatch_mode = DispatchMode::kFComputeEx;
+  }
+#else
+  CHECK_EQ(out_attrs->size(), 3);
+#endif
+  for (int& out_attr : *out_attrs)
+    out_attr = kDefaultStorage;
   return true;
 }
 
@@ -101,7 +145,7 @@ the float32 data into int8.
     This operator only supports `pool_type` of `avg` or `max`.)code" ADD_FILELINE)
 .set_num_inputs(3)
 .set_num_outputs(3)
-.set_attr_parser(ParamParser<PoolingParam>)
+.set_attr_parser(PoolingParamParser)
 .set_attr<nnvm::FListInputNames>("FListInputNames",
   [](const NodeAttrs& attrs) {
     return std::vector<std::string>{"data", "min_data", "max_data"};
@@ -112,6 +156,7 @@ the float32 data into int8.
   })
 .set_attr<nnvm::FInferShape>("FInferShape", QuantizedPoolingShape)
 .set_attr<nnvm::FInferType>("FInferType", QuantizedPoolingType)
+.set_attr<FInferStorageType>("FInferStorageType", QuantizedPoolingStorageType)
 .set_attr<FNeedRequantize>("FNeedRequantize",
   [](const NodeAttrs& attrs) {
     const PoolingParam& param = nnvm::get<PoolingParam>(attrs.parsed);

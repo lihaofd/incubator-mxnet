@@ -34,6 +34,7 @@ from . import _constants as C
 from . import vocab
 from ... import ndarray as nd
 from ... import registry
+from ... import base
 
 
 def register(embedding_cls):
@@ -160,7 +161,7 @@ class _TokenEmbedding(vocab.Vocabulary):
     pre-trained token embedding file, are taken as the indexed tokens of the embedding.
 
 
-    Properties
+    Attributes
     ----------
     token_to_idx : dict mapping str to int
         A dict mapping each token to its index integer.
@@ -474,7 +475,8 @@ class GloVe(_TokenEmbedding):
     the resulting representations showcase interesting linear substructures of the word vector
     space. (Source from https://nlp.stanford.edu/projects/glove/)
 
-    Reference:
+    References
+    ----------
 
     GloVe: Global Vectors for Word Representation.
     Jeffrey Pennington, Richard Socher, and Christopher D. Manning.
@@ -489,14 +491,14 @@ class GloVe(_TokenEmbedding):
 
     License for pre-trained embeddings:
 
-        https://opendatacommons.org/licenses/pddl/
+        https://fedoraproject.org/wiki/Licensing/PDDL
 
 
     Parameters
     ----------
     pretrained_file_name : str, default 'glove.840B.300d.txt'
         The name of the pre-trained token embedding file.
-    embedding_root : str, default os.path.join('~', '.mxnet', 'embeddings')
+    embedding_root : str, default $MXNET_HOME/embeddings
         The root directory for storing embedding-related files.
     init_unknown_vec : callback
         The callback used to initialize the embedding vector for the unknown token.
@@ -505,25 +507,6 @@ class GloVe(_TokenEmbedding):
         embedding vectors, such as loaded from a pre-trained token embedding file. If None, all the
         tokens from the loaded embedding vectors, such as loaded from a pre-trained token embedding
         file, will be indexed.
-
-
-    Properties
-    ----------
-    token_to_idx : dict mapping str to int
-        A dict mapping each token to its index integer.
-    idx_to_token : list of strs
-        A list of indexed tokens where the list indices and the token indices are aligned.
-    unknown_token : hashable object
-        The representation for any unknown token. In other words, any unknown token will be indexed
-        as the same representation.
-    reserved_tokens : list of strs or None
-        A list of reserved tokens that will always be indexed.
-    vec_len : int
-        The length of the embedding vector for each token.
-    idx_to_vec : mxnet.ndarray.NDArray
-        For all the indexed tokens in this embedding, this NDArray maps each token's index to an
-        embedding vector. The largest valid index maps to the initialized embedding vector for every
-        reserved token, such as an unknown_token token and a padding token.
     """
 
     # Map a pre-trained token embedding archive file and its SHA-1 hash.
@@ -541,7 +524,7 @@ class GloVe(_TokenEmbedding):
         return archive
 
     def __init__(self, pretrained_file_name='glove.840B.300d.txt',
-                 embedding_root=os.path.join('~', '.mxnet', 'embeddings'),
+                 embedding_root=os.path.join(base.data_dir(), 'embeddings'),
                  init_unknown_vec=nd.zeros, vocabulary=None, **kwargs):
         GloVe._check_pretrained_file_names(pretrained_file_name)
 
@@ -563,7 +546,8 @@ class FastText(_TokenEmbedding):
     representations and text classifiers. It works on standard, generic hardware. Models can later
     be reduced in size to even fit on mobile devices. (Source from https://fasttext.cc/)
 
-    References:
+    References
+    ----------
 
     Enriching Word Vectors with Subword Information.
     Piotr Bojanowski, Edouard Grave, Armand Joulin, and Tomas Mikolov.
@@ -600,7 +584,7 @@ class FastText(_TokenEmbedding):
     ----------
     pretrained_file_name : str, default 'wiki.en.vec'
         The name of the pre-trained token embedding file.
-    embedding_root : str, default os.path.join('~', '.mxnet', 'embeddings')
+    embedding_root : str, default $MXNET_HOME/embeddings
         The root directory for storing embedding-related files.
     init_unknown_vec : callback
         The callback used to initialize the embedding vector for the unknown token.
@@ -609,25 +593,6 @@ class FastText(_TokenEmbedding):
         embedding vectors, such as loaded from a pre-trained token embedding file. If None, all the
         tokens from the loaded embedding vectors, such as loaded from a pre-trained token embedding
         file, will be indexed.
-
-
-    Properties
-    ----------
-    token_to_idx : dict mapping str to int
-        A dict mapping each token to its index integer.
-    idx_to_token : list of strs
-        A list of indexed tokens where the list indices and the token indices are aligned.
-    unknown_token : hashable object
-        The representation for any unknown token. In other words, any unknown token will be indexed
-        as the same representation.
-    reserved_tokens : list of strs or None
-        A list of reserved tokens that will always be indexed.
-    vec_len : int
-        The length of the embedding vector for each token.
-    idx_to_vec : mxnet.ndarray.NDArray
-        For all the indexed tokens in this embedding, this NDArray maps each token's index to an
-        embedding vector. The largest valid index maps to the initialized embedding vector for every
-        reserved token, such as an unknown_token token and a padding token.
     """
 
     # Map a pre-trained token embedding archive file and its SHA-1 hash.
@@ -642,7 +607,7 @@ class FastText(_TokenEmbedding):
         return '.'.join(pretrained_file_name.split('.')[:-1])+'.zip'
 
     def __init__(self, pretrained_file_name='wiki.simple.vec',
-                 embedding_root=os.path.join('~', '.mxnet', 'embeddings'),
+                 embedding_root=os.path.join(base.data_dir(), 'embeddings'),
                  init_unknown_vec=nd.zeros, vocabulary=None, **kwargs):
         FastText._check_pretrained_file_names(pretrained_file_name)
 
@@ -686,25 +651,6 @@ class CustomEmbedding(_TokenEmbedding):
         embedding vectors, such as loaded from a pre-trained token embedding file. If None, all the
         tokens from the loaded embedding vectors, such as loaded from a pre-trained token embedding
         file, will be indexed.
-
-
-    Properties
-    ----------
-    token_to_idx : dict mapping str to int
-        A dict mapping each token to its index integer.
-    idx_to_token : list of strs
-        A list of indexed tokens where the list indices and the token indices are aligned.
-    unknown_token : hashable object
-        The representation for any unknown token. In other words, any unknown token will be indexed
-        as the same representation.
-    reserved_tokens : list of strs or None
-        A list of reserved tokens that will always be indexed.
-    vec_len : int
-        The length of the embedding vector for each token.
-    idx_to_vec : mxnet.ndarray.NDArray
-        For all the indexed tokens in this embedding, this NDArray maps each token's index to an
-        embedding vector. The largest valid index maps to the initialized embedding vector for every
-        reserved token, such as an unknown_token token and a padding token.
     """
 
     def __init__(self, pretrained_file_path, elem_delim=' ', encoding='utf8',
@@ -734,25 +680,6 @@ class CompositeEmbedding(_TokenEmbedding):
     token_embeddings : instance or list of `mxnet.contrib.text.embedding._TokenEmbedding`
         One or multiple pre-trained token embeddings to load. If it is a list of multiple
         embeddings, these embedding vectors will be concatenated for each token.
-
-
-    Properties
-    ----------
-    token_to_idx : dict mapping str to int
-        A dict mapping each token to its index integer.
-    idx_to_token : list of strs
-        A list of indexed tokens where the list indices and the token indices are aligned.
-    unknown_token : hashable object
-        The representation for any unknown token. In other words, any unknown token will be indexed
-        as the same representation.
-    reserved_tokens : list of strs or None
-        A list of reserved tokens that will always be indexed.
-    vec_len : int
-        The length of the embedding vector for each token.
-    idx_to_vec : mxnet.ndarray.NDArray
-        For all the indexed tokens in this embedding, this NDArray maps each token's index to an
-        embedding vector. The largest valid index maps to the initialized embedding vector for every
-        reserved token, such as an unknown_token token and a padding token.
     """
     def __init__(self, vocabulary, token_embeddings):
 

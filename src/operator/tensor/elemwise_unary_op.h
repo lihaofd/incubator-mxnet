@@ -29,11 +29,15 @@
 #include <vector>
 #include <utility>
 #include <algorithm>
+#include <climits>
 #include "./cast_storage-inl.h"
 #include "../mshadow_op.h"
 #include "../mxnet_op.h"
 #include "../elemwise_op_common.h"
 #include "../../ndarray/ndarray_function.h"
+#if MSHADOW_USE_MKL == 1
+#include "mkl.h"
+#endif
 
 namespace mxnet {
 namespace op {
@@ -126,10 +130,10 @@ class OpBase {
     in_blobs.reserve(inputs.size());
     out_blobs.reserve(outputs.size());
     for (size_t i = 0, n = inputs.size(); i < n; ++i) {
-      in_blobs.emplace_back(std::move(inputs[i].data()));
+      in_blobs.emplace_back(inputs[i].data());
     }
     for (size_t i = 0, n = outputs.size(); i < n; ++i) {
-      out_blobs.emplace_back(std::move(outputs[i].data()));
+      out_blobs.emplace_back(outputs[i].data());
     }
     computer(attrs, ctx, in_blobs, req, out_blobs);
   }
@@ -299,7 +303,11 @@ class UnaryOp : public OpBase {
         }
         break;
       case kWriteInplace:
+// cannot check if ptrs are the same for MKLDNN because we may have
+// created copies of input when reordering. WriteInPlace will still write to original array
+#if MXNET_USE_MKLDNN == 0
         CHECK_EQ(inputs[0].dptr_, outputs[0].dptr_);
+#endif
         break;
       case kNullOp:
         break;
@@ -343,6 +351,43 @@ class UnaryOp : public OpBase {
     } else {
       LogUnimplementedOp(attrs, ctx, inputs, req, outputs);
     }
+  }
+
+#if MSHADOW_USE_MKL == 1
+  static inline void MKLLog(MKL_INT size, const float* pIn, float* pOut) {
+    vsLn(size, pIn, pOut);
+  }
+
+  static inline void MKLLog(MKL_INT size, const double* pIn, double* pOut) {
+    vdLn(size, pIn, pOut);
+  }
+#endif
+
+  template<typename xpu, typename OP>
+  static void LogCompute(const nnvm::NodeAttrs& attrs,
+                         const OpContext& ctx,
+                         const std::vector<TBlob>& inputs,
+                         const std::vector<OpReqType>& req,
+                         const std::vector<TBlob>& outputs) {
+    if (req[0] == kNullOp) return;
+    // if defined MSHADOW_USE_MKL then call mkl log when req is KWriteTo, type_flag
+    // is mshadow::kFloat32 or mshadow::kFloat64 and data size less than or equal MKL_INT_MAX
+#if MSHADOW_USE_MKL == 1
+    auto type_flag = inputs[0].type_flag_;
+    const size_t MKL_INT_MAX = (sizeof(MKL_INT) == sizeof(int)) ? INT_MAX : LLONG_MAX;
+    size_t input_size = inputs[0].Size();
+    if (req[0] == kWriteTo &&
+        input_size <= MKL_INT_MAX &&
+        (type_flag == mshadow::kFloat32 || type_flag == mshadow::kFloat64)) {
+      MSHADOW_SGL_DBL_TYPE_SWITCH(type_flag, DType, {
+        MKLLog(input_size, inputs[0].dptr<DType>(), outputs[0].dptr<DType>());
+      });
+    } else {
+      Compute<xpu, OP>(attrs, ctx, inputs, req, outputs);
+    }
+#else
+    Compute<xpu, OP>(attrs, ctx, inputs, req, outputs);
+#endif
   }
 };
 
@@ -476,6 +521,34 @@ void HardSigmoidBackward(const nnvm::NodeAttrs& attrs,
   });
 }
 
+struct ReshapeLikeParam : public dmlc::Parameter<ReshapeLikeParam> {
+  dmlc::optional<int> lhs_begin, rhs_begin, lhs_end, rhs_end;
+  DMLC_DECLARE_PARAMETER(ReshapeLikeParam) {
+    DMLC_DECLARE_FIELD(lhs_begin)
+        .set_default(dmlc::optional<int>())
+        .describe(
+            "Defaults to 0. "
+            "The beginning index along which the lhs dimensions are to be "
+            "reshaped. Supports negative indices.");
+    DMLC_DECLARE_FIELD(lhs_end)
+        .set_default(dmlc::optional<int>())
+        .describe("Defaults to None. "
+                  "The ending index along which the lhs dimensions are to be "
+                  "used for reshaping. Supports negative indices.");
+    DMLC_DECLARE_FIELD(rhs_begin)
+        .set_default(dmlc::optional<int>())
+        .describe("Defaults to 0. "
+                  "The beginning index along which the rhs dimensions are to "
+                  "be used for "
+                  "reshaping. Supports negative indices.");
+    DMLC_DECLARE_FIELD(rhs_end)
+        .set_default(dmlc::optional<int>())
+        .describe("Defaults to None. "
+                  "The ending index along which the rhs dimensions are to be "
+                  "used for reshaping. Supports negative indices.");
+  }
+};
+
 /*! \brief Unary compute */
 #define MXNET_OPERATOR_REGISTER_UNARY(__name$)                      \
   NNVM_REGISTER_OP(__name$)                                         \
@@ -492,6 +565,7 @@ void HardSigmoidBackward(const nnvm::NodeAttrs& attrs,
 /*! \brief Unary compute, with FComputeEx for csr and rsp available  */
 #define MXNET_OPERATOR_REGISTER_UNARY_WITH_RSP_CSR(__name$, __xpu$, __kernel$)                     \
   MXNET_OPERATOR_REGISTER_UNARY(__name$)                                                           \
+  MXNET_ADD_SPARSE_OP_ALIAS(__name$)                                                               \
   .set_attr<FInferStorageType>("FInferStorageType", ElemwiseStorageType<1, 1, false, true, true>)  \
   .set_attr<FCompute>("FCompute<" #__xpu$ ">", UnaryOp::Compute<__xpu$, __kernel$>)                \
   .set_attr<FComputeEx>("FComputeEx<" #__xpu$ ">", UnaryOp::ComputeEx<__xpu$, __kernel$>)
@@ -499,6 +573,7 @@ void HardSigmoidBackward(const nnvm::NodeAttrs& attrs,
 /*! \brief Unary compute, with FComputeEx for rsp available  */
 #define MXNET_OPERATOR_REGISTER_UNARY_WITH_RSP(__name$, __xpu$, __kernel$)                         \
   MXNET_OPERATOR_REGISTER_UNARY(__name$)                                                           \
+  MXNET_ADD_SPARSE_OP_ALIAS(__name$)                                                               \
   .set_attr<FInferStorageType>("FInferStorageType", ElemwiseStorageType<1, 1, false, true, false>) \
   .set_attr<FCompute>("FCompute<" #__xpu$ ">", UnaryOp::Compute<__xpu$, __kernel$>)                \
   .set_attr<FComputeEx>("FComputeEx<" #__xpu$ ">", UnaryOp::ComputeEx<__xpu$, __kernel$>)

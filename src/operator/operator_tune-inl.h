@@ -56,7 +56,7 @@ namespace op {
 #endif
 #endif  // MXNET_NO_INLINE
 
-#define OUTSIDE_COUNT_SHIFT    9
+#define OUTSIDE_COUNT_SHIFT  3
 
 namespace tune {
 
@@ -165,8 +165,14 @@ class OperatorTune : public OperatorTuneByType<DType> {
         // Not especially concerned with a race condition, since this hsould
         // run when only one thread is active (static init), just don't cache this variable
         OperatorTuneBase::calculated_.store(true);
-        OperatorTuneBase::omp_overhead_ns_ = GetOMPLoopOverhead();
         std::string config = dmlc::GetEnv("MXNET_USE_OPERATOR_TUNING", std::string());
+        StringUtil::trim(&config);
+        // disabled
+        if (!config.empty() && ::isdigit(config[0]) && std::atoi(config.c_str()) == 0) {
+          OperatorTuneBase::omp_overhead_ns_ = INT_MAX;
+        } else {
+          OperatorTuneBase::omp_overhead_ns_ = GetOMPLoopOverhead();
+        }
         ParseEnablerConfig(config);
       }
 
@@ -350,7 +356,8 @@ class OperatorTune : public OperatorTuneByType<DType> {
   static duration_t GetOMPLoopOverhead() {
     // It was found empirically that OMP times was not heavily tied to number of cores,
     // so take an average across all core counts
-    const auto max_cores = static_cast<size_t>(omp_get_num_procs()) >> 1;
+    const auto max_cores_default = static_cast<size_t>(omp_get_num_procs()) >> 1;
+    const auto max_cores = dmlc::GetEnv("MXNET_USE_NUM_CORES_OPERATOR_TUNING", max_cores_default);
     if (max_cores >= 2) {
       std::vector<duration_t> core_times;
       // Take care of any OMP lazy-init with a throwaway call
@@ -435,7 +442,7 @@ class OperatorTune : public OperatorTuneByType<DType> {
   }
 
   /*!
-   * \brief Parse MXNET_ENABLE_OPERATOR_TUNING environment variable
+   * \brief Parse MXNET_USE_OPERATOR_TUNING environment variable
    * \param config String representation of MXNET_ENABLE_OPERATOR_TUNING environment variable
    *        Values:
    *            0=disable all

@@ -20,7 +20,7 @@
  * Copyright (c) 2018 by Contributors
  * \file roi_align.cu
  * \brief roi align operator
- * \author Hang Zhang
+ * \author Hang Zhang, Shesung
  * Adapted from Caffe2
 */
 #include "./roi_align-inl.h"
@@ -111,6 +111,7 @@ __global__ void RoIAlignForwardKernel(
     const int nthreads,
     const T* bottom_data,
     const T spatial_scale,
+    const bool position_sensitive,
     const int channels,
     const int height,
     const int width,
@@ -145,8 +146,15 @@ __global__ void RoIAlignForwardKernel(
     T bin_size_h = static_cast<T>(roi_height) / static_cast<T>(pooled_height);
     T bin_size_w = static_cast<T>(roi_width) / static_cast<T>(pooled_width);
 
+    int c_unpooled = c;
+    int channels_unpooled = channels;
+    if (position_sensitive) {
+      c_unpooled = c * pooled_height * pooled_width + ph * pooled_width + pw;
+      channels_unpooled = channels * pooled_height * pooled_width;
+    }
     const T* offset_bottom_data =
-        bottom_data + (roi_batch_ind * channels + c) * height * width;
+        bottom_data + (roi_batch_ind * channels_unpooled + c_unpooled)
+        * height * width;
 
     // We use roi_bin_grid to sample the grid and mimic integral
     int roi_bin_grid_h = (sampling_ratio > 0)
@@ -231,13 +239,6 @@ __device__ void bilinear_interpolate_gradient(
   T lx = x - *x_low;
   T hy = 1. - ly, hx = 1. - lx;
 
-  // reference in forward
-  // T v1 = bottom_data[*y_low * width + *x_low];
-  // T v2 = bottom_data[*y_low * width + *x_high];
-  // T v3 = bottom_data[*y_high * width + *x_low];
-  // T v4 = bottom_data[*y_high * width + *x_high];
-  // T val = (w1 * v1 + *w2 * v2 + *w3 * v3 + *w4 * v4);
-
   *w1 = hy * hx, *w2 = hy * lx, *w3 = ly * hx, *w4 = ly * lx;
 
   return;
@@ -249,6 +250,7 @@ __global__ void RoIAlignBackwardKernel(
     const T* top_diff,
     const int num_rois,
     const T spatial_scale,
+    const bool position_sensitive,
     const int channels,
     const int height,
     const int width,
@@ -283,8 +285,15 @@ __global__ void RoIAlignBackwardKernel(
     T bin_size_h = static_cast<T>(roi_height) / static_cast<T>(pooled_height);
     T bin_size_w = static_cast<T>(roi_width) / static_cast<T>(pooled_width);
 
+    int c_unpooled = c;
+    int channels_unpooled = channels;
+    if (position_sensitive) {
+      c_unpooled = c * pooled_height * pooled_width + ph * pooled_width + pw;
+      channels_unpooled = channels * pooled_height * pooled_width;
+    }
     T* offset_bottom_diff =
-        bottom_diff + (roi_batch_ind * channels + c) * height * width;
+        bottom_diff + (roi_batch_ind * channels_unpooled + c_unpooled)
+        * height * width;
 
     int top_offset = (n * channels + c) * pooled_height * pooled_width;
     const T* offset_top_diff = top_diff + top_offset;
@@ -341,16 +350,6 @@ __global__ void RoIAlignBackwardKernel(
               offset_bottom_diff + y_high * width + x_low, static_cast<T>(g3));
           atomicAdd(
               offset_bottom_diff + y_high * width + x_high, static_cast<T>(g4));
-          /*
-          gpu_atomic_add(
-              static_cast<T>(g1), offset_bottom_diff + y_low * width + x_low);
-          gpu_atomic_add(
-              static_cast<T>(g2), offset_bottom_diff + y_low * width + x_high);
-          gpu_atomic_add(
-              static_cast<T>(g3), offset_bottom_diff + y_high * width + x_low);
-          gpu_atomic_add(
-              static_cast<T>(g4), offset_bottom_diff + y_high * width + x_high);
-          */
         }  // if
       }  // ix
     }  // iy
@@ -374,7 +373,7 @@ void ROIAlignForwardCompute(const nnvm::NodeAttrs& attrs,
 
   const int count = out_data[roialign::kOut].Size();
   const int num_rois = in_data[roialign::kBox].size(0);
-  const int channels = in_data[roialign::kData].size(1);
+  const int channels = out_data[roialign::kOut].size(1);  // channels of pooled output
   const int height = in_data[roialign::kData].size(2);
   const int width = in_data[roialign::kData].size(3);
   const int pooled_height = out_data[roialign::kOut].size(2);
@@ -394,12 +393,13 @@ void ROIAlignForwardCompute(const nnvm::NodeAttrs& attrs,
           count,
           bottom_data,
           param.spatial_scale,
+          param.position_sensitive,
           channels,
           height,
           width,
           pooled_height,
           pooled_width,
-          -1,
+          param.sample_ratio,
           bottom_rois,
           top_data);
   })
@@ -431,7 +431,7 @@ void ROIAlignBackwardCompute(const nnvm::NodeAttrs& attrs,
 
   const int count = out_grad[0].Size();
   const int num_rois = in_data[0].size(0);
-  const int channels = outputs[0].size(1);
+  const int channels = out_grad[0].size(1);  // channels of pooled output
   const int height = outputs[0].size(2);
   const int width = outputs[0].size(3);
   const int pooled_height = out_grad[0].size(2);
@@ -462,12 +462,13 @@ void ROIAlignBackwardCompute(const nnvm::NodeAttrs& attrs,
         top_diff,
         num_rois,
         param.spatial_scale,
+        param.position_sensitive,
         channels,
         height,
         width,
         pooled_height,
         pooled_width,
-        -1,
+        param.sample_ratio,
         grad_in,
         bottom_rois);
   })

@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 
 # Train a Linear Regression Model with Sparse Symbols
 In previous tutorials, we introduced `CSRNDArray` and `RowSparseNDArray`,
@@ -190,7 +207,7 @@ fallback_log = fallback_exec.outputs[1]
 
 
 
-### Inspecting Storage Types of the Symbol Graph (Work in Progress)
+### Inspecting Storage Types of the Symbol Graph
 
 When the environment variable `MXNET_INFER_STORAGE_TYPE_VERBOSE_LOGGING` is set to `1`, MXNet will log the storage type information of
 operators' inputs and outputs in the computation graph. For example, we can inspect the storage types of
@@ -312,8 +329,10 @@ assert metric.get()[1] < 1, "Achieved MSE (%f) is larger than expected (1.0)" % 
 
 
 
-### Training the model with multiple machines
+### Training the model with multiple machines or multiple devices
 
-To train a sparse model with multiple machines, please refer to the example in [mxnet/example/sparse/](https://github.com/apache/incubator-mxnet/tree/master/example/sparse)
+Distributed training with `row_sparse` weights and gradients are supported in MXNet, which significantly reduces communication cost for large models. To train a sparse model with multiple machines, you need to call `prepare` before `forward`, or `save_checkpoint`.
+Please refer to the example in [mxnet/example/sparse/linear_classification](https://github.com/apache/incubator-mxnet/tree/master/example/sparse/linear_classification)
+for more details.
 
 <!-- INSERT SOURCE DOWNLOAD BUTTONS -->

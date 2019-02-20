@@ -30,7 +30,8 @@ void RunGraph(
     std::vector<OpReqType>&& array_reqs,
     std::vector<uint32_t>&& ref_count,
     std::vector<OpStatePtr> *p_states,
-    const DispatchModeVector &dispatch_modes) {
+    const DispatchModeVector &dispatch_modes,
+    bool recording) {
   using namespace nnvm;
   using namespace imperative;
   static auto& createop = nnvm::Op::GetAttr<FCreateOpState>("FCreateOpState");
@@ -40,7 +41,6 @@ void RunGraph(
   const auto imp = Imperative::Get();
 
   std::vector<OpStatePtr>& states = *p_states;
-  bool recording = imp->is_recording();
 
   std::vector<NDArray*> ndinputs, ndoutputs;
   ShapeVector arg_shapes;
@@ -79,9 +79,9 @@ void RunGraph(
       arg_dtypes.clear();
       arg_shapes.reserve(ndinputs.size());
       arg_dtypes.reserve(ndinputs.size());
-      for (size_t i = 0; i < ndinputs.size(); ++i) {
-        arg_shapes.emplace_back(ndinputs[i]->shape());
-        arg_dtypes.emplace_back(ndinputs[i]->dtype());
+      for (auto& ndinput : ndinputs) {
+        arg_shapes.emplace_back(ndinput->shape());
+        arg_dtypes.emplace_back(ndinput->dtype());
       }
       states[i] = createop[node.source->op()](
           node.source->attrs, ctx, arg_shapes, arg_dtypes);

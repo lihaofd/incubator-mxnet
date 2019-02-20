@@ -17,7 +17,7 @@
 
 package org.apache.mxnet.optimizer
 
-import org.apache.mxnet.{Optimizer, LRScheduler, NDArray}
+import org.apache.mxnet._
 import org.apache.mxnet.NDArrayConversions._
 
 /**
@@ -41,14 +41,15 @@ class SGD(val learningRate: Float = 0.01f, momentum: Float = 0.0f,
    */
   override def update(index: Int, weight: NDArray, grad: NDArray, state: AnyRef): Unit = {
     // TODO(bing) implement wd_bias, wd_gamma, wd_beta (copy from python package)
-    var lr =
-      (if (lrScheduler != null) {
+    var lr = {
+      if (lrScheduler != null) {
         val scheduledLr = lrScheduler(numUpdate)
         updateCount(index)
         scheduledLr
       } else {
         this.learningRate
-      })
+      }
+    }
     lr = getLr(index, lr)
 
     val wd = getWd(index, this.wd)
@@ -72,7 +73,8 @@ class SGD(val learningRate: Float = 0.01f, momentum: Float = 0.0f,
       weight += mom
       adder.dispose()
     } else {
-      require(momentum == 0f)
+      require(momentum == 0f,
+        s"momentum should be zero when state is provided.")
       // adder = -lr * (resdGrad + this.wd * weight)
       // we write in this way to get rid of memory leak
       val adder = this.wd * weight
@@ -90,7 +92,13 @@ class SGD(val learningRate: Float = 0.01f, momentum: Float = 0.0f,
     if (momentum == 0.0f) {
       null
     } else {
-      NDArray.zeros(weight.shape, weight.context)
+      val s = NDArray.zeros(weight.shape, weight.context)
+      // this is created on the fly and shared between runs,
+      // we don't want it to be dispose from the scope
+      // and should be handled by the dispose
+      val scope = ResourceScope.getCurrentScope()
+      if (scope.isDefined) scope.get.remove(s)
+      s
     }
   }
 

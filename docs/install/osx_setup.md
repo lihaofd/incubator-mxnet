@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # Installing MXNet from source on OS X (Mac)
 
 **NOTE:** For prebuild MXNet with Python installation, please refer to the [new install guide](http://mxnet.io/install/index.html).
@@ -65,6 +82,10 @@ Install the dependencies, required for MXNet, with the following commands:
 	brew install openblas
 	brew tap homebrew/core
 	brew install opencv
+
+	# If building with MKLDNN
+	brew install llvm
+
 	# Get pip
 	easy_install pip
 	# For visualization of network graphs
@@ -79,7 +100,7 @@ After you have installed the dependencies, pull the MXNet source code from Git a
 The file called ```osx.mk``` has the configuration required for building MXNet on OS X. First copy ```make/osx.mk``` into ```config.mk```, which is used by the ```make``` command:
 
 ```bash
-    git clone --recursive https://github.com/dmlc/mxnet ~/mxnet
+    git clone --recursive https://github.com/apache/incubator-mxnet ~/mxnet
     cd ~/mxnet
     cp make/osx.mk ./config.mk
     echo "USE_BLAS = openblas" >> ./config.mk
@@ -89,12 +110,25 @@ The file called ```osx.mk``` has the configuration required for building MXNet o
     make -j$(sysctl -n hw.ncpu)
 ```
 
+To build with MKLDNN
+
+```bash
+echo "CC=$(brew --prefix llvm)/bin/clang" >> ./config.mk
+echo "CXX=$(brew --prefix llvm)/bin/clang++" >> ./config.mk
+echo "USE_OPENCV=1" >> ./config.mk
+echo "USE_OPENMP=1" >> ./config.mk
+echo "USE_MKLDNN=1" >> ./config.mk
+echo "USE_BLAS=apple" >> ./config.mk
+echo "USE_PROFILER=1" >> ./config.mk
+LIBRARY_PATH=$(brew --prefix llvm)/lib/ make -j $(sysctl -n hw.ncpu)
+```
+
 If building with ```GPU``` support, add the following configuration to config.mk and build:
 ```bash
     echo "USE_CUDA = 1" >> ./config.mk
     echo "USE_CUDA_PATH = /usr/local/cuda" >> ./config.mk
     echo "USE_CUDNN = 1" >> ./config.mk
-    make
+    make -j$(sysctl -n hw.ncpu)
 ```
 **Note:** To change build parameters, edit ```config.mk```.
 
@@ -102,10 +136,21 @@ If building with ```GPU``` support, add the following configuration to config.mk
 &nbsp;
 
 We have installed MXNet core library. Next, we will install MXNet interface package for the programming language of your choice:
+- [Python](#install-mxnet-for-python)
 - [R](#install-the-mxnet-package-for-r)
 - [Julia](#install-the-mxnet-package-for-julia)
 - [Scala](#install-the-mxnet-package-for-scala)
 - [Perl](#install-the-mxnet-package-for-perl)
+
+## Install MXNet for Python
+To install the MXNet Python binding navigate to the root of the MXNet folder then run the following:
+
+```bash
+$ cd python
+$ pip install -e .
+```
+
+Note that the `-e` flag is optional. It is equivalent to `--editable` and means that if you edit the source files, these changes will be reflected in the package installed.
 
 ## Install the MXNet Package for R
 You have 2 options:
@@ -113,7 +158,20 @@ You have 2 options:
 2. Building MXNet from Source Code
 
 ### Building MXNet with the Prebuilt Binary Package
+Install OpenCV and OpenBLAS.
 
+```bash
+brew install opencv
+brew install openblas@0.3.1
+```
+
+Add a soft link to the OpenBLAS installation. This example links the 0.3.1 version:
+
+```bash
+ln -sf /usr/local/opt/openblas/lib/libopenblasp-r0.3.* /usr/local/opt/openblas/lib/libopenblasp-r0.3.1.dylib
+```
+
+Install the latest version (3.5.1+) of R from [CRAN](https://cran.r-project.org/bin/macosx/).
 For OS X (Mac) users, MXNet provides a prebuilt binary package for CPUs. The prebuilt package is updated weekly. You can install the package directly in the R console using the following commands:
 
 ```r
@@ -137,14 +195,6 @@ Run the following commands to install the MXNet dependencies and build the MXNet
     make rpkg
 ```
 
-**Note:** R-package is a folder in the MXNet source.
-
-These commands create the MXNet R package as a tar.gz file that you can install as an R package. To install the R package, run the following command, use your MXNet version number:
-
-```bash
-	R CMD INSTALL mxnet_current_r.tar.gz
-```
-
 ## Install the MXNet Package for Julia
 The MXNet package for Julia is hosted in a separate repository, MXNet.jl, which is available on [GitHub](https://github.com/dmlc/MXNet.jl). To use Julia binding it with an existing libmxnet installation, set the ```MXNET_HOME``` environment variable by running the following command:
 
@@ -166,26 +216,15 @@ You might want to add this command to your ```~/.bashrc``` file. If you do, you 
 
 For more details about installing and using MXNet with Julia, see the [MXNet Julia documentation](http://dmlc.ml/MXNet.jl/latest/user-guide/install/).
 
+
 ## Install the MXNet Package for Scala
 
-If you haven't installed maven yet, you need to install it now (required by the makefile):
-```bash
-    brew install maven
-```
+To use the MXNet-Scala package, you can acquire the Maven package as a dependency.
 
-Before you build MXNet for Scala from source code, you must complete [building the shared library](#build-the-shared-library). After you build the shared library, run the following command from the MXNet source root directory to build the MXNet Scala package:
+Further information is in the [MXNet-Scala Setup Instructions](./scala_setup.md).
 
-```bash
-    make scalapkg
-```
+If you use IntelliJ or a similar IDE, you may want to follow the [MXNet-Scala on IntelliJ tutorial](../tutorials/scala/mxnet_scala_on_intellij.md) instead.
 
-This command creates the JAR files for the assembly, core, and example modules. It also creates the native library in the ```native/{your-architecture}/target directory```, which you can use to cooperate with the core module.
-
-To install the MXNet Scala package into your local Maven repository, run the following command from the MXNet source root directory:
-
-```bash
-    make scalainstall
-```
 
 ## Install the MXNet Package for Perl
 Before you build MXNet for Perl from source code, you must complete [building the shared library](#build-the-shared-library).

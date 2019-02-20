@@ -26,6 +26,10 @@
 #include <mxnet/c_api.h>
 #include <mxnet/executor.h>
 #include "./c_api_common.h"
+#include "../executor/graph_executor.h"
+#if MXNET_USE_TENSORRT
+#include "../executor/trt_graph_executor.h"
+#endif  // MXNET_USE_TENSORRT
 
 int MXExecutorPrint(ExecutorHandle handle, const char **out_str) {
   Executor *exec = static_cast<Executor*>(handle);
@@ -126,7 +130,7 @@ int MXExecutorBindX(SymbolHandle symbol_handle,
                           num_map_keys, map_keys, map_dev_types, map_dev_ids,
                           len, in_args, arg_grad_store, grad_req_type,
                           aux_states_len, aux_states,
-                          NULL, out);
+                          nullptr, out);
 }
 
 int MXExecutorBindEX(SymbolHandle symbol_handle,
@@ -144,8 +148,6 @@ int MXExecutorBindEX(SymbolHandle symbol_handle,
                      NDArrayHandle *aux_states,
                      ExecutorHandle shared_exec,
                      ExecutorHandle *out) {
-  Executor* exec = nullptr;
-
   API_BEGIN();
   nnvm::Symbol *symb = static_cast<nnvm::Symbol*>(symbol_handle);
   Context ctx = Context::Create(static_cast<Context::DeviceType>(dev_type), dev_id);
@@ -164,7 +166,7 @@ int MXExecutorBindEX(SymbolHandle symbol_handle,
   for (mx_uint i = 0; i < len; ++i) {
     in_args_vec.push_back(*(in_args_ptr[i]));
     if (arg_grad_ptr[i] == nullptr) {
-      arg_grad_vec.push_back(NDArray());
+      arg_grad_vec.emplace_back();
       grad_req_vec.push_back(kNullOp);
     } else {
       arg_grad_vec.push_back(*(arg_grad_ptr[i]));
@@ -177,7 +179,7 @@ int MXExecutorBindEX(SymbolHandle symbol_handle,
   *out = Executor::Bind(*symb, ctx, ctx_map, in_args_vec,
                         arg_grad_vec, grad_req_vec, aux_states_vec,
                         reinterpret_cast<Executor*>(shared_exec));
-  API_END_HANDLE_ERROR(delete exec);
+  API_END();
 }
 
 /*!
@@ -439,13 +441,38 @@ int MXExecutorSimpleBind(SymbolHandle symbol_handle,
   std::vector<NDArray> in_arg_vec;
   std::vector<NDArray> arg_grad_vec;
   std::vector<NDArray> aux_state_vec;
-
-  *out = Executor::SimpleBind(*sym, ctx, ctx_map, in_arg_ctx_vec, arg_grad_ctx_vec,
-                              aux_state_ctx_vec, arg_shape_map, arg_dtype_map, arg_stype_map,
-                              grad_req_type_vec, shared_arg_name_set, &in_arg_vec,
-                              &arg_grad_vec, &aux_state_vec,
-                              use_shared_buffer ? &shared_buffer_map : nullptr,
-                              reinterpret_cast<Executor*>(shared_exec_handle));
+#if MXNET_USE_TENSORRT
+  // If we've built with TensorRT support we by default return an TRTExecutor.
+  // Users can override this behaviour via env var, which is useful for example for A/B
+  // performance testing.
+  if (dmlc::GetEnv("MXNET_USE_TENSORRT", false)) {
+    *out = exec::TrtGraphExecutor::TensorRTBind(*sym, ctx, ctx_map, &in_arg_ctx_vec,
+                                                &arg_grad_ctx_vec, &aux_state_ctx_vec,
+                                                &arg_shape_map, &arg_dtype_map, &arg_stype_map,
+                                                &grad_req_type_vec, shared_arg_name_set,
+                                                &in_arg_vec, &arg_grad_vec, &aux_state_vec,
+                                                use_shared_buffer ? &shared_buffer_map : nullptr,
+                                                reinterpret_cast<Executor*>(shared_exec_handle));
+  } else {
+    // Checks to see if this env var has been set to true or false by the user.
+    // If the user is using a TensorRT build, but has not enabled TRT at inference time, warn
+    // them and describe further steps.
+    const int unset_indicator =  std::numeric_limits<int>::quiet_NaN();
+    if (dmlc::GetEnv("MXNET_USE_TENSORRT", unset_indicator) == unset_indicator) {
+      LOG(INFO) << "TensorRT not enabled by default.  Please set the MXNET_USE_TENSORRT "
+                   "environment variable to 1 or call mx.contrib.tensorrt.set_use_tensorrt(True) "
+                   "to enable.";
+    }
+#endif  // MXNET_USE_TENSORRT
+    *out = Executor::SimpleBind(*sym, ctx, ctx_map, in_arg_ctx_vec, arg_grad_ctx_vec,
+                                aux_state_ctx_vec, arg_shape_map, arg_dtype_map, arg_stype_map,
+                                grad_req_type_vec, shared_arg_name_set, &in_arg_vec,
+                                &arg_grad_vec, &aux_state_vec,
+                                use_shared_buffer ? &shared_buffer_map : nullptr,
+                                reinterpret_cast<Executor*>(shared_exec_handle));
+#if MXNET_USE_TENSORRT
+  }
+#endif  // MXNET_USE_TENSORRT
 
   // copy ndarray ptrs to ret->handles so that front end
   // can access them
@@ -529,8 +556,11 @@ int MXExecutorReshape(int partial_shaping,
                       NDArrayHandle** aux_states,
                       ExecutorHandle shared_exec,
                       ExecutorHandle *out) {
+  Executor* new_exec = nullptr;
+
   MXAPIThreadLocalEntry *ret = MXAPIThreadLocalStore::Get();
   API_BEGIN();
+  *out = nullptr;  // ensure we can know whether to free executor on early abort
   // create shape map for in_args and aux_states
   std::unordered_map<std::string, TShape> kwargs(num_provided_arg_shapes);
   for (mx_uint i = 0; i < num_provided_arg_shapes; ++i) {
@@ -552,8 +582,9 @@ int MXExecutorReshape(int partial_shaping,
   std::vector<NDArray> aux_state_vec;
 
   Executor* exec = static_cast<Executor*>(shared_exec);
-  *out = exec->Reshape(partial_shaping, allow_up_sizing, ctx, ctx_map, kwargs,
+  new_exec = exec->Reshape(partial_shaping, allow_up_sizing, ctx, ctx_map, kwargs,
                        &in_arg_vec, &arg_grad_vec, &aux_state_vec);
+  *out = new_exec;
 
   ret->ret_handles.clear();
   ret->ret_handles.reserve(in_arg_vec.size()+arg_grad_vec.size()+aux_state_vec.size());
@@ -594,7 +625,24 @@ int MXExecutorReshape(int partial_shaping,
     *aux_states = &(ret->ret_handles[nd_idx]);
     nd_idx = ret->ret_handles.size();
   }
-  API_END_HANDLE_ERROR(delete out);
+  API_END_HANDLE_ERROR(delete new_exec);
+}
+
+int MXExecutorGetOptimizedSymbol(ExecutorHandle handle,
+                                 SymbolHandle *out) {
+  auto s = new nnvm::Symbol();
+  API_BEGIN();
+
+#if MXNET_USE_TENSORRT
+  auto exec = static_cast<exec::TrtGraphExecutor*>(handle);
+  *s = exec->GetOptimizedSymbol();
+  *out = s;
+#else
+  LOG(FATAL) << "GetOptimizedSymbol may only be used when MXNet is compiled with "
+                "MXNET_USE_TENSORRT enabled.  Please re-compile MXNet with TensorRT support.";
+#endif  // MXNET_USE_TENSORRT
+
+  API_END_HANDLE_ERROR(delete s);
 }
 
 int MXExecutorSetMonitorCallback(ExecutorHandle handle,
@@ -608,6 +656,22 @@ int MXExecutorSetMonitorCallback(ExecutorHandle handle,
     callback_temp(name, handle, callback_handle_temp);
   };
   Executor *exec = static_cast<Executor*>(handle);
-  exec->SetMonitorCallback(clbk);
+  exec->SetMonitorCallback(clbk, false);
+  API_END();
+}
+
+int MXExecutorSetMonitorCallbackEX(ExecutorHandle handle,
+                                   ExecutorMonitorCallback callback,
+                                   void* callback_handle,
+                                   bool monitor_all) {
+  API_BEGIN();
+  ExecutorMonitorCallback callback_temp = callback;
+  void* callback_handle_temp = callback_handle;
+  std::function<void(const char*, void*)> clbk
+  = [callback_temp, callback_handle_temp](const char *name, void* handle) {
+    callback_temp(name, handle, callback_handle_temp);
+  };
+  Executor *exec = static_cast<Executor*>(handle);
+  exec->SetMonitorCallback(clbk, monitor_all);
   API_END();
 }

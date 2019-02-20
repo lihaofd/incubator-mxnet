@@ -273,8 +273,10 @@ def grad(heads, variables, head_grads=None, retain_graph=None, create_graph=Fals
     returned as new NDArrays instead of stored into `variable.grad`.
     Supports recording gradient graph for computing higher order gradients.
 
-    .. Note: Currently only a very limited set of operators support higher order
-    gradients.
+    .. note::
+
+      Currently only a very limited set of operators support higher order \
+      gradients.
 
     Parameters
     ----------
@@ -465,7 +467,7 @@ class Function(object):
                         "autograd.Function.backward must return NDArrays, not %s"%type(ret)
                     if req == 0:  # null
                         return True
-                    elif req == 1 or req == 2:  # write or inplace
+                    elif req in (1, 2):  # write or inplace
                         igrad[:] = ret
                     elif req == 'add':
                         igrad[:] += ret

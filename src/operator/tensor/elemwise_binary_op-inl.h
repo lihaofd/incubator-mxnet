@@ -18,7 +18,7 @@
  */
 
 /*!
- * \file elemwise_binary_op.h
+ * \file elemwise_binary_op-inl.h
  * \brief Function definition of elementwise binary operators
  */
 #ifndef MXNET_OPERATOR_TENSOR_ELEMWISE_BINARY_OP_INL_H_
@@ -27,25 +27,12 @@
 #include <vector>
 #include <algorithm>
 #include "./elemwise_binary_op.h"
+#include "../mxnet_op.h"
+#define WARP_SIZE 32
+#define WARP_SIZE_BITS 5
 
 namespace mxnet {
 namespace op {
-
-template<typename OP>
-void ElemwiseBinaryOp::RspRspOp(mshadow::Stream<gpu> *s,
-                                const nnvm::NodeAttrs &attrs,
-                                const OpContext &ctx,
-                                const NDArray &lhs,
-                                const NDArray &rhs,
-                                const OpReqType req,
-                                const NDArray &output,
-                                const bool lhs_may_be_dense,
-                                const bool rhs_may_be_dense,
-                                const bool allow_inplace,
-                                const bool scatter) {
-  LOG(FATAL) << "GPU not supported for RspRspOp";
-}
-
 
 /*! \brief binary op handling for the following row sparse inputs/outputs
   rsp, rsp -> rsp,
@@ -81,13 +68,13 @@ void ElemwiseBinaryOp::RspRspOp(mshadow::Stream<cpu> *s,
       if (rhs_is_dense) {
         // For right-side dense, in order to have sparse output, lhs input zero should
         // always output zero
-        CHECK(fabs(static_cast<float>(OP::Map(DType(0), DType(99)))) < 1e-4f);
+        CHECK(std::fabs(static_cast<float>(OP::Map(DType(0), DType(99)))) < 1e-4f);
         CHECK(!is_dense_result);  // Currently not handled
       }
       if (lhs_is_dense) {
         // For left-side dense, in order to have sparse output, lhs input zero should
         // always output zero
-        CHECK(fabs(static_cast<float>(OP::Map(DType(99), DType(0)))) < 1e-4f);
+        CHECK(std::fabs(static_cast<float>(OP::Map(DType(99), DType(0)))) < 1e-4f);
         CHECK(!is_dense_result);  // Currently not handled
       }
 
@@ -115,10 +102,10 @@ void ElemwiseBinaryOp::RspRspOp(mshadow::Stream<cpu> *s,
             CHECK_EQ(is_dense_result, false);
             if (lhs_in_place) {
               // For in-place, zero L-value must always be zero output
-              DCHECK(fabs(static_cast<float>(OP::Map(DType(0), DType(99)))) < DType(1e-3));
+              DCHECK(std::fabs(static_cast<float>(OP::Map(DType(0), DType(99)))) < DType(1e-3));
             } else {
               // For in-place, zero R-value must always be zero output
-              DCHECK(fabs(static_cast<float>(OP::Map(DType(99), DType(0)))) < DType(1e-3));
+              DCHECK(std::fabs(static_cast<float>(OP::Map(DType(99), DType(0)))) < DType(1e-3));
             }
           }
         }
@@ -442,9 +429,39 @@ struct ElemwiseDnsCsrDnsKernel {
   }
 };
 
+/*!
+ * \brief Kernel for performing elemwise op between dense and csr matrix
+ * \param tid          global thread id
+ * \param req          type of request
+ * \param out          output array
+ * \param dns_data     data array of dense input
+ * \param csr_data     data array of csr input
+ * \param csr_indices  indices array of csr input
+ * \param csr_indptr   indptr array of csr input
+ * \param num_rows     number of rows of both inputs
+ * \param num_cols     number of columns of both inputs
+ */
+template<int req, typename OP>
+struct ElemwiseDnsCsrDnsWarpKernel {
+  template<typename DType, typename IType, typename CType>
+  MSHADOW_XINLINE static void Map(int tid, DType* out, DType* dns_data,
+                                  const DType* csr_data, const IType* csr_indices,
+                                  const CType* csr_indptr, const nnvm::dim_t num_rows,
+                                  const nnvm::dim_t num_cols) {
+    if (tid < WARP_SIZE * num_rows) {
+      const int row_id = tid >> WARP_SIZE_BITS;
+      const int warp_id = tid & (WARP_SIZE - 1);
+      for (int j = csr_indptr[row_id] + warp_id; j < csr_indptr[row_id+1]; j += WARP_SIZE) {
+        KERNEL_ASSIGN(out[row_id * num_cols + csr_indices[j]], req,
+                      OP::Map(dns_data[row_id * num_cols + csr_indices[j]], csr_data[j]));
+      }
+    }
+  }
+};
+
 /*! \brief DNS -op- CSR binary operator for non-canonical NDArray */
-template<typename xpu, typename OP>
-void ElemwiseBinaryOp::DnsCsrDnsOp(mshadow::Stream<xpu> *s,
+template<typename OP>
+void ElemwiseBinaryOp::DnsCsrDnsOp(mshadow::Stream<cpu> *s,
                                    const nnvm::NodeAttrs &attrs,
                                    const OpContext &ctx,
                                    const NDArray &dns,
@@ -471,20 +488,20 @@ void ElemwiseBinaryOp::DnsCsrDnsOp(mshadow::Stream<xpu> *s,
       MSHADOW_IDX_TYPE_SWITCH(csr_indptr.type_flag_, CType, {
         MXNET_ASSIGN_REQ_SWITCH(req, Req, {
           if (reverse && std::is_same<OP, mshadow_op::minus>::value) {
-            mxnet_op::Kernel<mxnet_op::op_with_req<mshadow_op::negation, Req>, xpu>::Launch(
+            mxnet_op::Kernel<mxnet_op::op_with_req<mshadow_op::negation, Req>, cpu>::Launch(
               s, output.data().Size(), output.data().dptr<DType>(), dns.data().dptr<DType>());
             if (!csr.storage_initialized()) { return; }
-            mxnet_op::Kernel<ElemwiseDnsCsrDnsKernel<Req, mshadow_op::plus>, xpu>::Launch(
+            mxnet_op::Kernel<ElemwiseDnsCsrDnsKernel<Req, mshadow_op::plus>, cpu>::Launch(
               s, num_csr_rows, output.data().dptr<DType>(),
               output.data().dptr<DType>(), csr_data.dptr<DType>(), csr_indices.dptr<IType>(),
               csr_indptr.dptr<CType>(), num_csr_rows, num_csr_cols);
           } else {
             if (req == kWriteTo) {
-              mxnet_op::Kernel<mxnet_op::op_with_req<mshadow_op::identity, Req>, xpu>::Launch(
+              mxnet_op::Kernel<mxnet_op::op_with_req<mshadow_op::identity, Req>, cpu>::Launch(
                 s, output.data().Size(), output.data().dptr<DType>(), dns.data().dptr<DType>());
             }
             if (!csr.storage_initialized()) { return; }
-            mxnet_op::Kernel<ElemwiseDnsCsrDnsKernel<Req, OP>, xpu>::Launch(
+            mxnet_op::Kernel<ElemwiseDnsCsrDnsKernel<Req, OP>, cpu>::Launch(
               s, num_csr_rows, output.data().dptr<DType>(),
               output.data().dptr<DType>(), csr_data.dptr<DType>(), csr_indices.dptr<IType>(),
               csr_indptr.dptr<CType>(), num_csr_rows, num_csr_cols);
@@ -622,7 +639,7 @@ void ElemwiseBinaryOp::DnsRspDnsOp(mshadow::Stream<xpu> *s,
                                    const bool reverse) {
   using namespace mshadow;
   using namespace mxnet_op;
-  CHECK_EQ(dns.storage_type(), kDefaultStorage);
+  CHECK(dns.storage_type() == kDefaultStorage || dns.storage_type() == kRowSparseStorage);
   CHECK_EQ(rsp.storage_type(), kRowSparseStorage);
   CHECK_EQ(output.data().Size(), dns.data().Size());
   CHECK(req != kAddTo);

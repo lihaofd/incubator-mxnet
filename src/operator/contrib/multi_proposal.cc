@@ -67,8 +67,8 @@ inline void BBoxTransformInv(const mshadow::Tensor<cpu, 2>& boxes,
 
     float pred_ctr_x = dx * width + ctr_x;
     float pred_ctr_y = dy * height + ctr_y;
-    float pred_w = exp(dw) * width;
-    float pred_h = exp(dh) * height;
+    float pred_w = std::exp(dw) * width;
+    float pred_h = std::exp(dh) * height;
 
     float pred_x1 = pred_ctr_x - 0.5 * (pred_w - 1.0);
     float pred_y1 = pred_ctr_y - 0.5 * (pred_h - 1.0);
@@ -197,7 +197,7 @@ inline void CopyScore(const mshadow::Tensor<cpu, 2>& dets,
 inline void ReverseArgsort(const mshadow::Tensor<cpu, 1>& score,
                            mshadow::Tensor<cpu, 1> *order) {
   ReverseArgsortCompl cmpl(score.dptr_);
-  std::sort(order->dptr_, order->dptr_ + score.size(0), cmpl);
+  std::stable_sort(order->dptr_, order->dptr_ + score.size(0), cmpl);
 }
 
 // reorder proposals according to order and keep the pre_nms_top_n proposals

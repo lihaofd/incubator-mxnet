@@ -21,7 +21,7 @@ from mxnet.test_utils import *
 import numpy as np
 from functools import reduce
 from mxnet.module.executor_group import DataParallelExecutorGroup
-from common import setup_module, with_seed, assertRaises
+from common import setup_module, with_seed, assertRaises, teardown
 from collections import namedtuple
 
 
@@ -42,6 +42,18 @@ def test_module_dtype():
 
     for x in mod.get_outputs():
       assert x.dtype == dtype
+
+
+def test_module_bind():
+    sym = mx.sym.Variable('data')
+    sym = mx.sym.Activation(data=sym, act_type='relu', __layout__='TNC')
+
+    mod = mx.mod.Module(sym, ('data',), None, context=[mx.cpu(0), mx.cpu(1)])
+    assertRaises(TypeError, mod.bind, data_shapes=[('data', mx.nd.array([10,10]))])
+    assert mod.binded == False
+
+    mod.bind(data_shapes=[('data', (10,10))])
+    assert mod.binded == True
 
 
 @with_seed()
@@ -162,6 +174,8 @@ def test_module_layout():
 
 @with_seed()
 def test_save_load():
+    previous_update_on_kvstore = os.getenv('MXNET_UPDATE_ON_KVSTORE', "1")
+    os.putenv('MXNET_UPDATE_ON_KVSTORE', '1')
     def dict_equ(a, b):
         assert set(a) == set(b)
         for k in a:
@@ -199,6 +213,7 @@ def test_save_load():
     assert mod._symbol.tojson() == mod2._symbol.tojson()
     dict_equ(mod.get_params()[0], mod2.get_params()[0])
     dict_equ(mod._kvstore._updater.states, mod2._updater.states)
+    os.putenv('MXNET_UPDATE_ON_KVSTORE', previous_update_on_kvstore)
 
 
 @with_seed()
@@ -317,8 +332,9 @@ def test_module_switch_bucket():
     assert total_bytes_after == total_bytes_before
 
 
-
-@with_seed(11)
+# roywei: Getting rid of fixed seed as flakiness could not be reproduced,
+# tracked at: https://github.com/apache/incubator-mxnet/issues/11705
+@with_seed()
 def test_module_set_params():
     # data iter
     data = mx.nd.array([[0.05, .10]]);
@@ -381,7 +397,7 @@ def test_module_set_params():
                  aux_params={}, allow_missing=True, allow_extra=False)
 
 
-@with_seed(11)
+@with_seed()
 def test_monitor():
     # data iter
     data = mx.nd.array([[0.05, .10]]);
@@ -557,11 +573,12 @@ def test_executor_group():
     for opt in sparse_embedding_opt:
         check_shared_exec_group(opt)
 
-@with_seed(11)
-def test_factorization_machine_module(verbose=False):
+@with_seed()
+def test_factorization_machine_module():
     """ Test factorization machine model with sparse operators """
-    def check_factorization_machine_module(optimizer=None, num_epochs=None):
-        print("check_factorization_machine_module( {} )".format(optimizer))
+    # this unit test is to test the flow, training accuracy is tested in another test
+    def check_factorization_machine_module(num_epochs=None):
+        print("check_factorization_machine_module")
 
         def fm(factor_size, feature_dim, init):
             x = mx.symbol.Variable("data", stype='csr')
@@ -613,33 +630,16 @@ def test_factorization_machine_module(verbose=False):
         mod.bind(data_shapes=train_iter.provide_data, label_shapes=train_iter.provide_label)
         # initialize parameters by uniform random numbers
         mod.init_params(initializer=init)
-        if optimizer == 'sgd':
-            # use Sparse SGD with learning rate 0.1 to train
-            sgd = mx.optimizer.SGD(momentum=0.1, clip_gradient=5.0, learning_rate=0.01,
-                                   rescale_grad=1.0/batch_size)
-            mod.init_optimizer(optimizer=sgd)
-            if num_epochs is None:
-                num_epochs = 10
-            expected_accuracy = 0.02
-        elif optimizer == 'adam':
-            # use Sparse Adam to train
-            adam = mx.optimizer.Adam(clip_gradient=5.0, learning_rate=0.0005,
-                                     rescale_grad=1.0/batch_size)
-            mod.init_optimizer(optimizer=adam)
-            if num_epochs is None:
-                num_epochs = 10
-            expected_accuracy = 0.05
-        elif optimizer == 'adagrad':
-            # use Sparse AdaGrad with learning rate 0.1 to train
-            adagrad = mx.optimizer.AdaGrad(clip_gradient=5.0, learning_rate=0.01,
-                                           rescale_grad=1.0/batch_size)
-            mod.init_optimizer(optimizer=adagrad)
-            if num_epochs is None:
-                num_epochs = 20
-            expected_accuracy = 0.09
-        else:
-            raise AssertionError("Unsupported optimizer type '" + optimizer + "' specified")
-        # use accuracy as the metric
+
+        # use Sparse SGD with learning rate 0.1 to train
+        sgd = mx.optimizer.SGD(momentum=0.1, clip_gradient=5.0, learning_rate=0.01,
+                               rescale_grad=1.0/batch_size)
+        mod.init_optimizer(optimizer=sgd)
+        if num_epochs is None:
+            num_epochs = 50
+        expected_accuracy = 0.02
+
+	# use accuracy as the metric
         metric = mx.metric.create('MSE')
         # train 'num_epochs' epoch
         for epoch in range(num_epochs):
@@ -654,23 +654,7 @@ def test_factorization_machine_module(verbose=False):
         if num_epochs > 1:
             assert(metric.get()[1] < expected_accuracy)
 
-    if verbose is True:
-        print("============ SGD ==========================")
-        start = time.clock()
-    check_factorization_machine_module('sgd')
-    if verbose is True:
-        print("Duration: {}".format(time.clock() - start))
-        print("============ ADAM ==========================")
-        start = time.clock()
-    check_factorization_machine_module('adam')
-    if verbose is True:
-        print("Duration: {}".format(time.clock() - start))
-        print("============ ADAGRAD ==========================")
-        start = time.clock()
-    check_factorization_machine_module('adagrad')
-    if verbose is True:
-        print("Duration: {}".format(time.clock() - start))
-
+    check_factorization_machine_module()
 
 @with_seed()
 def test_module_initializer():
@@ -803,6 +787,8 @@ def test_forward_reshape():
              for_training=False, force_rebind=True)
     assert mod.predict(pred_dataiter).shape == tuple([10, num_class])
 
+@with_seed()
+def test_forward_types():
     #Test forward with other data batch API
     Batch = namedtuple('Batch', ['data'])
     data = mx.sym.Variable('data')
@@ -816,6 +802,119 @@ def test_forward_reshape():
     data2 = [mx.nd.ones((3, 5))]
     mod.forward(Batch(data2))
     assert mod.get_outputs()[0].shape == (3, 5)
+
+    #Test forward with other NDArray and np.ndarray inputs
+    data = mx.sym.Variable('data')
+    out = data * 2
+    mod = mx.mod.Module(symbol=out, label_names=None)
+    mod.bind(data_shapes=[('data', (1, 10))])
+    mod.init_params()
+    data1 = mx.nd.ones((1, 10))
+    assert mod.predict(data1).shape == (1, 10)
+    data2 = np.ones((1, 10))
+    assert mod.predict(data1).shape == (1, 10)
+
+
+def test_reference_single_batch_during_fit():
+    """
+    When using C++-based iterators, it's important that only a single batch is referenced at a time. Because C++
+    iterators are exposed to the Python code through a C API, there is no concept of reference counting. Hence,
+    typically C++ iterators will deallocate a batch when next() is called on them. So, we need to make sure the Python
+    code only references a single batch at a time, otherwise the Python code will attempt to access freed memory,
+    resulting in either (a) garbage accuracy or (b) a segmentation fault.
+    """
+    current_batch_i = None
+
+    class MockBatch(object):
+        def __init__(self, i):
+            self.i = i
+
+        @property
+        def label(self):
+            global current_batch_i
+            assert self.i == current_batch_i
+
+    class MockTrainData(object):
+        def __init__(self, batches):
+            self._i = 0
+            self._batches = batches
+            self.provide_data = None
+            self.provide_label = None
+            self.reset = lambda: None
+
+        def __iter__(self):
+            self._i = 0
+            return self
+
+        def __next__(self):
+            global current_batch_i
+
+            if self._i < self._batches:
+                current_batch_i = self._i
+                self._i += 1
+                return MockBatch(current_batch_i)
+            raise StopIteration
+
+        def next(self):
+            return self.__next__()
+
+    mod = mx.mod.BaseModule()
+
+    def empty_fn(*args, **kwargs):
+        pass
+    mod.bind = empty_fn
+    mod.init_params = empty_fn
+    mod.init_optimizer = empty_fn
+    mod.forward = empty_fn
+    mod.backward = empty_fn
+    mod.update = empty_fn
+    mod.update_metric = empty_fn
+    mod.get_params = lambda: (None, None)
+
+    train_data = MockTrainData(batches=2)
+    mod.fit(train_data, num_epoch=1)
+
+@with_seed()
+def test_bucket_module_grad_req():
+    batch_size = 2
+    def sym_gen(_):
+        data = mx.symbol.Variable('data')
+        weight = mx.symbol.Variable('a', shape=(1,), init=mx.init.One())
+        sym = mx.sym.make_loss(mx.sym.broadcast_mul(data, weight))
+        return sym, ('data',), None
+
+    mod = mx.mod.BucketingModule(sym_gen=sym_gen, default_bucket_key=10)
+    mod.bind(data_shapes=[['data', (batch_size, )]], for_training=True, grad_req='write')
+    mod.init_params()
+
+    mod.forward_backward(mx.io.DataBatch(data=[mx.nd.ones((batch_size,))],
+                                         label=None,
+                                         provide_data=[mx.io.DataDesc(name='data', shape=(batch_size, ), layout='N')],
+                                         bucket_key=10))
+    assert(mod._curr_module._exec_group.execs[0].grad_dict['a'].asscalar() == batch_size)
+
+    mod.forward_backward(mx.io.DataBatch(data=[mx.nd.ones((batch_size,))],
+                                         label=None,
+                                         provide_data=[mx.io.DataDesc(name='data', shape=(batch_size, ), layout='N')],
+                                         bucket_key=5))
+    assert(mod._curr_module._exec_group.execs[0].grad_dict['a'].asscalar() == batch_size)
+
+    mod = mx.mod.BucketingModule(sym_gen=sym_gen, default_bucket_key=10)
+    mod.bind(data_shapes=[['data', (batch_size, )]], for_training=True, grad_req='add')
+    mod.init_params()
+
+    mod.forward_backward(mx.io.DataBatch(data=[mx.nd.ones((batch_size,))],
+                                         label=None,
+                                         provide_data=[mx.io.DataDesc(name='data', shape=(batch_size,), layout='N')],
+                                         bucket_key=10))
+    assert(mod._curr_module._exec_group.execs[0].grad_dict['a'].asscalar() == batch_size)
+
+    mod.forward_backward(mx.io.DataBatch(data=[mx.nd.ones((batch_size,))],
+                                         label=None,
+                                         provide_data=[mx.io.DataDesc(name='data', shape=(batch_size,), layout='N')],
+                                         bucket_key=5))
+    assert mod._curr_module._grad_req == 'add'
+    assert(mod._curr_module._exec_group.execs[0].grad_dict['a'].asscalar() == 2 * batch_size)
 
 
 if __name__ == '__main__':

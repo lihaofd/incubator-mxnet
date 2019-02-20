@@ -30,6 +30,7 @@ import os
 from ... import nn
 from ....context import cpu
 from ...block import HybridBlock
+from .... import base
 
 
 # Helpers
@@ -61,7 +62,7 @@ def _add_conv_dw(out, dw_channels, channels, stride, relu6=False):
 class LinearBottleneck(nn.HybridBlock):
     r"""LinearBottleneck used in MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
-      Mobile Networks for Classification, Detection and Segmentation"
+    Mobile Networks for Classification, Detection and Segmentation"
     <https://arxiv.org/abs/1801.04381>`_ paper.
 
     Parameters
@@ -137,7 +138,7 @@ class MobileNet(HybridBlock):
 class MobileNetV2(nn.HybridBlock):
     r"""MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
-      Mobile Networks for Classification, Detection and Segmentation"
+    Mobile Networks for Classification, Detection and Segmentation"
     <https://arxiv.org/abs/1801.04381>`_ paper.
 
     Parameters
@@ -188,7 +189,7 @@ class MobileNetV2(nn.HybridBlock):
 
 # Constructor
 def get_mobilenet(multiplier, pretrained=False, ctx=cpu(),
-                  root=os.path.join('~', '.mxnet', 'models'), **kwargs):
+                  root=os.path.join(base.data_dir(), 'models'), **kwargs):
     r"""MobileNet model from the
     `"MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications"
     <https://arxiv.org/abs/1704.04861>`_ paper.
@@ -203,7 +204,7 @@ def get_mobilenet(multiplier, pretrained=False, ctx=cpu(),
         Whether to load the pretrained weights for model.
     ctx : Context, default CPU
         The context in which to load the pretrained weights.
-    root : str, default '~/.mxnet/models'
+    root : str, default $MXNET_HOME/models
         Location for keeping the model parameters.
     """
     net = MobileNet(multiplier, **kwargs)
@@ -213,16 +214,16 @@ def get_mobilenet(multiplier, pretrained=False, ctx=cpu(),
         version_suffix = '{0:.2f}'.format(multiplier)
         if version_suffix in ('1.00', '0.50'):
             version_suffix = version_suffix[:-1]
-        net.load_params(
+        net.load_parameters(
             get_model_file('mobilenet%s' % version_suffix, root=root), ctx=ctx)
     return net
 
 
 def get_mobilenet_v2(multiplier, pretrained=False, ctx=cpu(),
-                     root=os.path.join('~', '.mxnet', 'models'), **kwargs):
+                     root=os.path.join(base.data_dir(), 'models'), **kwargs):
     r"""MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
-      Mobile Networks for Classification, Detection and Segmentation"
+    Mobile Networks for Classification, Detection and Segmentation"
     <https://arxiv.org/abs/1801.04381>`_ paper.
 
     Parameters
@@ -235,7 +236,7 @@ def get_mobilenet_v2(multiplier, pretrained=False, ctx=cpu(),
         Whether to load the pretrained weights for model.
     ctx : Context, default CPU
         The context in which to load the pretrained weights.
-    root : str, default '~/.mxnet/models'
+    root : str, default $MXNET_HOME/models
         Location for keeping the model parameters.
     """
     net = MobileNetV2(multiplier, **kwargs)
@@ -245,7 +246,7 @@ def get_mobilenet_v2(multiplier, pretrained=False, ctx=cpu(),
         version_suffix = '{0:.2f}'.format(multiplier)
         if version_suffix in ('1.00', '0.50'):
             version_suffix = version_suffix[:-1]
-        net.load_params(
+        net.load_parameters(
             get_model_file('mobilenetv2_%s' % version_suffix, root=root), ctx=ctx)
     return net
 
@@ -268,7 +269,7 @@ def mobilenet1_0(**kwargs):
 def mobilenet_v2_1_0(**kwargs):
     r"""MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
-      Mobile Networks for Classification, Detection and Segmentation"
+    Mobile Networks for Classification, Detection and Segmentation"
     <https://arxiv.org/abs/1801.04381>`_ paper.
 
     Parameters
@@ -299,7 +300,7 @@ def mobilenet0_75(**kwargs):
 def mobilenet_v2_0_75(**kwargs):
     r"""MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
-      Mobile Networks for Classification, Detection and Segmentation"
+    Mobile Networks for Classification, Detection and Segmentation"
     <https://arxiv.org/abs/1801.04381>`_ paper.
 
     Parameters
@@ -330,7 +331,7 @@ def mobilenet0_5(**kwargs):
 def mobilenet_v2_0_5(**kwargs):
     r"""MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
-      Mobile Networks for Classification, Detection and Segmentation"
+    Mobile Networks for Classification, Detection and Segmentation"
     <https://arxiv.org/abs/1801.04381>`_ paper.
 
     Parameters
@@ -361,7 +362,7 @@ def mobilenet0_25(**kwargs):
 def mobilenet_v2_0_25(**kwargs):
     r"""MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
-      Mobile Networks for Classification, Detection and Segmentation"
+    Mobile Networks for Classification, Detection and Segmentation"
     <https://arxiv.org/abs/1801.04381>`_ paper.
 
     Parameters

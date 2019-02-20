@@ -64,8 +64,10 @@ enum OpReqType {
  * \sa Resource
  */
 struct OpContext {
+  /*! \brief whether there is a backward phase to compute gradients. */
+  bool need_grad;
   /*! \brief whether it is training phase */
-  int is_train;
+  bool is_train;
   /*! \brief RunContext related resources */
   RunContext run_ctx;
   /*! \brief the callback when operation completes, used by asynchronize ops */
@@ -85,20 +87,26 @@ struct OpContext {
 
 /*! \brief the execution type of the operator */
 enum class ExecType {
-  /*! \brief Forward/Backward are synchronize calls */
+  /*! \brief Forward/Backward are synchronous calls */
   kSync,
   /*!
-   * \brief Forward/Backward are asynchronize,
+   * \brief Forward/Backward are asynchronous,
    *  will call OpContext.async_on_complete when operation finishes.
    */
   kAsync,
   /*!
-   * \brief Cross device copy operation, this is a special operator
-   *  That indicates copy across devices, the input and output can sit on different device.
-   *  In current implementation, copy operator is specially handled by executor.
-   *  This flag is used for special case treatment and future extension of different copy ops.
+   * \brief Cross device copy operation, this is a special operator that indicates it will copy
+   * across devices. For example the input and output for this type of operator can potentially
+   * reside on different devices.  In the current implementation, a copy operator is specially
+   * handled by an executor. This flag is used for special case treatment and future extension of
+   * different copy ops.
    */
-  kCrossDeviceCopy
+  kCrossDeviceCopy,
+  /*!
+   * \brief A subgraph execution should happen in the main thread, instead of
+   *  in the execution engine.
+   */
+  kSubgraphExec,
 };
 
 /*! \brief the dispatch mode of the operator */
@@ -230,6 +238,8 @@ using FResourceRequest = std::function<
 /*!
  * \brief The resource request from the operator.
  *        An operator could register ResourceRequestEx, or ResourceRequest, or neither.
+ *        If an operator registers both ResourceRequestEx and ResourceRequest,
+ *        ResourceRequest is ignored.
  *
  * \note Register under "FResourceRequestEx"
  */
@@ -246,7 +256,7 @@ using FNDArrayFunction = std::function<void (const nnvm::NodeAttrs& attrs,
                                              const std::vector<NDArray>& inputs,
                                              std::vector<NDArray>* outputs)>;
 /*!
- * \brief Resiger a compute function for simple stateless forward only operator
+ * \brief Register a compute function for simple stateless forward only operator
  *
  * \note Register under "FCompute<cpu>" and "FCompute<gpu>"
  */
@@ -256,7 +266,7 @@ using FCompute = std::function<void (const nnvm::NodeAttrs& attrs,
                                      const std::vector<OpReqType>& req,
                                      const std::vector<TBlob>& outputs)>;
 /*!
- * \brief Resiger an NDArray compute function for simple stateless forward only operator
+ * \brief Register an NDArray compute function for simple stateless forward only operator
  * \note Register under "FComputeEx<xpu>" and "FComputeEx<xpu>"
  *       Dispatched only when inferred dispatch_mode is FDispatchComputeEx
  */
@@ -267,7 +277,7 @@ using FComputeEx = std::function<void (const nnvm::NodeAttrs& attrs,
                                        const std::vector<NDArray>& outputs)>;
 
 /*!
- * \brief Resiger a storage and dispatch mode inference function based on
+ * \brief Register a storage and dispatch mode inference function based on
  *        storage types of the inputs and outputs, and the dev_mask for the operator.
  *
  * \note Register under "FInferStorageType"
@@ -291,6 +301,14 @@ using FQuantizedOp = std::function<nnvm::NodePtr (const NodeAttrs& attrs)>;
  * \note Register under "FNeedRequantize" for non-quantized operators
  */
 using FNeedRequantize = std::function<bool (const NodeAttrs& attrs)>;
+
+/*!
+ * \brief Register a function to determine if the input of a quantized operator
+ * needs to be quantized. This is usually used for the quantized operators
+ * which can handle fp32 inputs directly.
+ */
+using FAvoidQuantizeInput = std::function<bool (const NodeAttrs& attrs,
+                                                size_t index)>;
 
 }  // namespace mxnet
 

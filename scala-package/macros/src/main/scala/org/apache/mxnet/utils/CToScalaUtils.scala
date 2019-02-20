@@ -18,24 +18,38 @@ package org.apache.mxnet.utils
 
 private[mxnet] object CToScalaUtils {
 
-
+  private val javaType = Map(
+    "float" -> "java.lang.Float",
+    "int" -> "java.lang.Integer",
+    "long" -> "java.lang.Long",
+    "double" -> "java.lang.Double",
+    "bool" -> "java.lang.Boolean")
+  private val scalaType = Map(
+    "float" -> "Float",
+    "int" -> "Int",
+    "long" -> "Long",
+    "double" -> "Double",
+    "bool" -> "Boolean")
 
   // Convert C++ Types to Scala Types
-  def typeConversion(in : String, argType : String = "", returnType : String) : String = {
+  def typeConversion(in : String, argType : String = "", argName : String,
+                     returnType : String, isJava : Boolean) : String = {
+    val header = returnType.split("\\.").dropRight(1)
+    val types = if (isJava) javaType else scalaType
     in match {
-      case "Shape(tuple)" | "ShapeorNone" => "org.apache.mxnet.Shape"
+      case "Shape(tuple)" | "ShapeorNone" => s"${header.mkString(".")}.Shape"
       case "Symbol" | "NDArray" | "NDArray-or-Symbol" => returnType
       case "Symbol[]" | "NDArray[]" | "NDArray-or-Symbol[]" | "SymbolorSymbol[]"
       => s"Array[$returnType]"
-      case "float" | "real_t" | "floatorNone" => "org.apache.mxnet.Base.MXFloat"
-      case "int" | "intorNone" | "int(non-negative)" => "Int"
-      case "long" | "long(non-negative)" => "Long"
-      case "double" | "doubleorNone" => "Double"
+      case "float" | "real_t" | "floatorNone" => types("float")
+      case "int" | "intorNone" | "int(non-negative)" => types("int")
+      case "long" | "long(non-negative)" => types("long")
+      case "double" | "doubleorNone" => types("double")
       case "string" => "String"
-      case "boolean" | "booleanorNone" => "Boolean"
-      case "tupleof<float>" | "tupleof<double>" | "ptr" | "" => "Any"
+      case "boolean" | "booleanorNone" => types("bool")
+      case "tupleof<float>" | "tupleof<double>" | "tupleof<>" | "ptr" | "" => "Any"
       case default => throw new IllegalArgumentException(
-        s"Invalid type for args: $default, $argType")
+        s"Invalid type for args: $default\nString argType: $argType\nargName: $argName")
     }
   }
 
@@ -47,10 +61,12 @@ private[mxnet] object CToScalaUtils {
     * The three field shown above do not usually come at the same time
     * This function used the above format to determine if the argument is
     * optional, what is it Scala type and possibly pass in a default value
+    * @param argName The name of the argument
     * @param argType Raw arguement Type description
     * @return (Scala_Type, isOptional)
     */
-  def argumentCleaner(argType : String, returnType : String) : (String, Boolean) = {
+  def argumentCleaner(argName: String, argType : String,
+                      returnType : String, isJava : Boolean) : (String, Boolean) = {
     val spaceRemoved = argType.replaceAll("\\s+", "")
     var commaRemoved : Array[String] = new Array[String](0)
     // Deal with the case e.g: stype : {'csr', 'default', 'row_sparse'}
@@ -64,11 +80,13 @@ private[mxnet] object CToScalaUtils {
     // Optional Field
     if (commaRemoved.length >= 3) {
       // arg: Type, optional, default = Null
-      require(commaRemoved(1).equals("optional"))
-      require(commaRemoved(2).startsWith("default="))
-      (typeConversion(commaRemoved(0), argType, returnType), true)
+      require(commaRemoved(1).equals("optional"),
+        s"""expected "optional" got ${commaRemoved(1)}""")
+      require(commaRemoved(2).startsWith("default="),
+        s"""expected "default=..." got ${commaRemoved(2)}""")
+      (typeConversion(commaRemoved(0), argType, argName, returnType, isJava), true)
     } else if (commaRemoved.length == 2 || commaRemoved.length == 1) {
-      val tempType = typeConversion(commaRemoved(0), argType, returnType)
+      val tempType = typeConversion(commaRemoved(0), argType, argName, returnType, isJava)
       val tempOptional = tempType.equals("org.apache.mxnet.Symbol")
       (tempType, tempOptional)
     } else {

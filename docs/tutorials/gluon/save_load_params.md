@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # Saving and Loading Gluon Models
 
 Training large models take a lot of time and it is a good idea to save the trained models to files to avoid training them again and again. There are a number of reasons to do this. For example, you might want to do inference on a machine that is different from the one where the model was trained. Sometimes model's performance on validation set decreases towards the end of the training because of overfitting. If you saved your model parameters after every epoch, at the end you can decide to use the model that performs best on the validation set. Another reason would be to train your model using one language (like Python that has a lot of tools for training) and run inference using a different language (like Scala probably because your application is built on Scala).
@@ -6,11 +23,11 @@ In this tutorial, we will learn ways to save and load Gluon models. There are tw
 
 **1. Save/load model parameters only**
 
-Parameters of any Gluon model can be saved using the `save_params` and `load_params` method. This does not save model architecture. This method is used to save parameters of dynamic (non-hybrid) models. Model architecture cannot be saved for dynamic models because model architecture changes during execution.
+Parameters of any Gluon model can be saved using the `save_parameters` and `load_parameters` method. This does not save model architecture. This method is used to save parameters of dynamic (non-hybrid) models. Model architecture cannot be saved for dynamic models because model architecture changes during execution.
 
 **2. Save/load model parameters AND architecture**
 
-The Model architecture of `Hybrid` models stays static and don't change during execution. Therefore both model parameters AND architecture can be saved and loaded using `export`, `load_checkpoint` and `load` methods.
+The Model architecture of `Hybrid` models stays static and don't change during execution. Therefore both model parameters AND architecture can be saved and loaded using `export`, `imports` methods.
 
 Let's look at the above methods in more detail. Let's start by importing the modules we'll need.
 
@@ -61,7 +78,7 @@ def build_lenet(net):
         net.add(gluon.nn.Dense(512, activation="relu"))
         # Second fully connected layer with as many neurons as the number of classes
         net.add(gluon.nn.Dense(num_outputs))
-        
+
         return net
 
 # Train a given model using MNIST data
@@ -126,24 +143,24 @@ Epoch: 0; Batch 900; Loss 0.008402 <!--notebook-skip-line-->
 
 ## Saving model parameters to file
 
-Okay, we now have a model (`net`) that we can save to a file. Let's save the parameters of this model to a file using the `save_params` function.
+Okay, we now have a model (`net`) that we can save to a file. Let's save the parameters of this model to a file using the `save_parameters` function.
 
 ```python
 file_name = "net.params"
-net.save_params(file_name)
+net.save_parameters(file_name)
 ```
 
 We have successfully saved the parameters of the model into a file.
 
-Note: `Block.collect_params().save()` is not a recommended way to save parameters of a Gluon network if you plan to load the parameters back into a Gluon network using `Block.load_params()`.
+Note: `Block.collect_params().save()` is not a recommended way to save parameters of a Gluon network if you plan to load the parameters back into a Gluon network using `Block.load_parameters()`.
 
 ## Loading model parameters from file
 
-Let's now create a network with the parameters we saved into the file. We build the network again using the helper first and then load the weights from the file we saved using the `load_params` function.
+Let's now create a network with the parameters we saved into the file. We build the network again using the helper first and then load the weights from the file we saved using the `load_parameters` function.
 
 ```python
 new_net = build_lenet(gluon.nn.Sequential())
-new_net.load_params(file_name, ctx=ctx)
+new_net.load_parameters(file_name, ctx=ctx)
 ```
 
 Note that to do this, we need the definition of the network as Python code. If we want to recreate this network on a different machine using the saved weights, we need the same Python code (`build_lenet`) that created the network to create the `new_net` object shown above. This means Python code needs to be copied over to any machine where we want to run this network.
@@ -240,18 +257,10 @@ One of the main reasons to serialize model architecture into a JSON file is to l
 
 ### From Python
 
-Serialized Hybrid networks (saved as .JSON and .params file) can be loaded and used inside Python frontend using `mx.model.load_checkpoint` and `gluon.nn.SymbolBlock`. To demonstrate that, let's load the network we serialized above.
+Serialized Hybrid networks (saved as .JSON and .params file) can be loaded and used inside Python frontend using `gluon.nn.SymbolBlock`. To demonstrate that, let's load the network we serialized above.
 
 ```python
-# Load the network architecture and parameters
-sym = mx.sym.load('lenet-symbol.json')
-# Create a Gluon Block using the loaded network architecture.
-# 'inputs' parameter specifies the name of the symbol in the computation graph
-# that should be treated as input. 'data' is the default name used for input when
-# a model architecture is saved to a file.
-deserialized_net = gluon.nn.SymbolBlock(outputs=sym, inputs=mx.sym.var('data'))
-# Load the parameters
-deserialized_net.collect_params().load('lenet-0001.params', ctx=ctx)
+deserialized_net = gluon.nn.SymbolBlock.imports("lenet-symbol.json", ['data'], "lenet-0001.params", ctx=ctx)
 ```
 
 `deserialized_net` now contains the network we deserialized from files. Let's test the deserialized network to make sure it works.

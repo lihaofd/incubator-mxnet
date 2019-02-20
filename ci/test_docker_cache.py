@@ -28,6 +28,7 @@ import os
 import logging
 import subprocess
 import sys
+from unittest.mock import MagicMock
 
 sys.path.append(os.path.dirname(__file__))
 import docker_cache
@@ -87,6 +88,8 @@ class TestDockerCache(unittest.TestCase):
         base = os.path.split(os.path.realpath(__file__))[0]
         os.chdir(base)
 
+        docker_cache._login_dockerhub = MagicMock()  # Override login
+
         # Stop in case previous execution was dirty
         try:
             self._stop_local_docker_registry()
@@ -132,7 +135,7 @@ class TestDockerCache(unittest.TestCase):
                 """
         platform = 'test_full_cache'
         docker_tag = build_util.get_docker_tag(platform=platform, registry=DOCKER_REGISTRY_PATH)
-        dockerfile_path = os.path.join(DOCKERFILE_DIR, 'Dockerfile.build.' + platform)
+        dockerfile_path = os.path.join(DOCKERFILE_DIR, 'Dockerfile.' + platform)
         try:
             with open(dockerfile_path, 'w') as dockerfile_handle:
                 dockerfile_handle.write(dockerfile_content)
@@ -193,7 +196,7 @@ class TestDockerCache(unittest.TestCase):
                 """
         platform = 'test_partial_cache'
         docker_tag = build_util.get_docker_tag(platform=platform, registry=DOCKER_REGISTRY_PATH)
-        dockerfile_path = os.path.join(DOCKERFILE_DIR, 'Dockerfile.build.' + platform)
+        dockerfile_path = os.path.join(DOCKERFILE_DIR, 'Dockerfile.' + platform)
         try:
             # Write initial Dockerfile
             with open(dockerfile_path, 'w') as dockerfile_handle:
@@ -248,5 +251,5 @@ def _assert_docker_build(lambda_func, expected_cache_hit_count: int, expected_ca
 
 
 if __name__ == '__main__':
-    import nose2
-    nose2.main()
+    import nose
+    nose.main()

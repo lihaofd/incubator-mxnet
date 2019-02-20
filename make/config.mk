@@ -37,9 +37,15 @@
 # choice of compiler
 #--------------------
 
+ifndef CC
 export CC = gcc
+endif
+ifndef CXX
 export CXX = g++
+endif
+ifndef NVCC
 export NVCC = nvcc
+endif
 
 # whether compile with options for MXNet developer
 DEV = 0
@@ -92,8 +98,10 @@ USE_LIBJPEG_TURBO_PATH = NONE
 # use openmp for parallelization
 USE_OPENMP = 1
 
-# whether use MKL-DNN library
-USE_MKLDNN = 0
+# whether use MKL-DNN library: 0 = disabled, 1 = enabled
+# if USE_MKLDNN is not defined, MKL-DNN will be enabled by default on x86 Linux.
+# you can disable it explicity with USE_MKLDNN = 0
+USE_MKLDNN =
 
 # whether use NNPACK library
 USE_NNPACK = 0
@@ -173,8 +181,20 @@ USE_OPERATOR_TUNING = 1
 # Use gperftools if found
 USE_GPERFTOOLS = 1
 
+# path to gperftools (tcmalloc) library in case of a non-standard installation
+USE_GPERFTOOLS_PATH =
+
+# Link gperftools statically
+USE_GPERFTOOLS_STATIC =
+
 # Use JEMalloc if found, and not using gperftools
 USE_JEMALLOC = 1
+
+# path to jemalloc library in case of a non-standard installation
+USE_JEMALLOC_PATH =
+
+# Link jemalloc statically
+USE_JEMALLOC_STATIC =
 
 #----------------------------
 # additional operators

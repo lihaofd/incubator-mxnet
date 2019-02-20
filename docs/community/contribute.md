@@ -1,4 +1,21 @@
-# Contributing MXNet
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
+# Contributing to MXNet
 
 Apache MXNet (incubating) is a community led, open source deep learning project. We welcome new members and look forward to your contributions. Here you will find how to get started and links to detailed information on MXNet best practices and processes.
 
@@ -39,10 +56,18 @@ The following actions are recommended steps for you to get started with contribu
 If you need help with using MXNet, have questions about applying it to a particular kind of problem, or have a discussion topic, please use the discussion forum:
 * [discuss.mxnet.io](https://discuss.mxnet.io) <i class="fas fa-external-link-alt"></i>
 
-### Dev Mailing List
+### Mailing Lists
 
-Please join the contributor mailing list by sending a subscribe email to dev-subscribe@mxnet.apache.org.
-* <a href="mailto:dev-subscribe@mxnet.apache.org">subscribe</a> <i class="far fa-envelope"></i>
+Please join either or both of the MXNet mailing lists:
+
+**For MXNet Users, join the USER mailing list**:
+
+- [MXNet Apache USER mailing list](https://lists.apache.org/list.html?user@mxnet.apache.org) (user@mxnet.apache.org): To subscribe, send an email to <a href="mailto:user-subscribe@mxnet.apache.org">user-subscribe@mxnet.apache.org</a> <i class="far fa-envelope"></i>
+
+**For Contributors to MXNet, join the DEV mailing list**:
+- [MXNet Apache DEV mailing list](https://lists.apache.org/list.html?dev@mxnet.apache.org) (dev@mxnet.apache.org): To subscribe, send an email to <a href="mailto:dev-subscribe@mxnet.apache.org">dev-subscribe@mxnet.apache.org</a> <i class="far fa-envelope"></i>
+
+
 * [archive](https://lists.apache.org/list.html?dev@mxnet.apache.org) <i class="fas fa-external-link-alt"></i>
 
 ### Slack
@@ -54,13 +79,24 @@ To join the MXNet slack channel send request to the contributor mailing list.
 
 ### Social Media
 
-Keep connected with the latest MXNet news and updates on [Twitter](https://twitter.com/apachemxnet) and [Reddit](https://reddit.com/r/mxnet). Also, subscribe to the [MXNet YouTube channel](https://www.youtube.com/channel/UCQua2ZAkbr_Shsgfk1LCy6A).
+Keep connected with the latest MXNet news and updates.
 
-<div class="g-ytsubscribe" data-channelid="UCQua2ZAkbr_Shsgfk1LCy6A" data-layout="full" data-count="hidden"></div>
-<br/><br/>
-<a href="https://twitter.com/apachemxnet?ref_src=twsrc%5Etfw" class="twitter-follow-button" data-show-count="false">Follow @apachemxnet</a><script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
-<br/><br/>
-<a href="https://reddit.com/r/mxnet"><img src="https://www.redditstatic.com/spreddit5.gif" alt="reddit" border="0"/> r/mxnet</a>
+<p>
+<a id="medium">
+<a href="https://medium.com/apache-mxnet"><img src="https://raw.githubusercontent.com/dmlc/web-data/master/mxnet/social/medium_black.svg?sanitize=true" height="30px"/> Contributor and guest blogs about MXNet</a>
+</p>
+<p>
+<a id="reddit">
+<a href="https://reddit.com/r/mxnet"><img src="https://raw.githubusercontent.com/dmlc/web-data/master/mxnet/social/reddit_blue.svg?sanitize=true" height="30px" alt="reddit"/> Discuss MXNet on r/mxnet</a>
+</p>
+<p>
+<a id="twitter">
+<a href="https://twitter.com/apachemxnet"><img src="https://raw.githubusercontent.com/dmlc/web-data/master/mxnet/social/twitter.svg?sanitize=true" height="30px"/> Apache MXNet on Twitter</a>
+</p>
+<p>
+<a id="youtube">
+<a href="https://www.youtube.com/apachemxnet"><img src="https://raw.githubusercontent.com/dmlc/web-data/master/mxnet/social/youtube_red.svg?sanitize=true" height="30px"/> MXNet YouTube channel</a>
+</p>
 
 
 ## JIRA
@@ -73,9 +109,9 @@ MXNet uses Apache's JIRA to track issues and larger projects. Anyone can review 
 
 ## Confluence Wiki
 
-The [MXNet Confluence Wiki](https://cwiki.apache.org/confluence/display/MXNET/MXNet+Home) has detailed development environment setup info, design proposals, release process info, and more. This is generally where contributor information is maintained.
+The [MXNet Confluence Wiki](https://cwiki.apache.org/confluence/display/MXNET/Apache+MXNet+Home) has detailed development environment setup info, design proposals, release process info, and more. This is generally where contributor information is maintained.
 
-* [MXNet Confluence Wiki](https://cwiki.apache.org/confluence/display/MXNET/MXNet+Home) <i class="fas fa-external-link-alt"></i>
+* [MXNet Confluence Wiki](https://cwiki.apache.org/confluence/display/MXNET/Apache+MXNet+Home) <i class="fas fa-external-link-alt"></i>
 
 
 ## Setup MXNet for Development

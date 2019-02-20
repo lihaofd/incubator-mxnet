@@ -165,7 +165,7 @@ class Parameter(object):
             return
 
         assert len(self._shape) == len(new_shape) and \
-            all(j == 0 or i == j for i, j in zip(new_shape, self._shape)), \
+            all(j in (0, i) for i, j in zip(new_shape, self._shape)), \
             "Expected shape %s is incompatible with given shape %s."%(
                 str(new_shape), str(self._shape))
 
@@ -231,7 +231,7 @@ class Parameter(object):
         """(Re)initializes by loading from data."""
         if self.shape:
             for self_dim, data_dim in zip(self.shape, data.shape):
-                assert self_dim == 0 or self_dim == data_dim, \
+                assert self_dim in (0, data_dim), \
                     "Failed loading Parameter '%s' from saved params: " \
                     "shape incompatible expected %s vs saved %s"%(
                         self.name, str(self.shape), str(data.shape))
@@ -310,14 +310,16 @@ class Parameter(object):
                                 self._grad, self.grad_req)
 
     def _reduce(self):
-        """Reduce data from multiple context."""
+        """Reduce data from multiple context to cpu."""
+        ctx = context.cpu()
         if self._stype == 'default':
             block = self.list_data()
-            data = ndarray.add_n(*(w.copyto(context.cpu()) for w in block)) / len(block)
+            data = ndarray.add_n(*(w.copyto(ctx) for w in block)) / len(block)
         else:
             # fetch all rows for 'row_sparse' param
-            all_row_ids = ndarray.arange(0, self.shape[0], dtype='int64', ctx=context.cpu())
-            data = self.row_sparse_data(all_row_ids)
+            all_row_ids = ndarray.arange(0, self.shape[0], dtype='int64', ctx=ctx)
+            data = ndarray.zeros(self.shape, stype='row_sparse', ctx=ctx)
+            self._trainer._row_sparse_pull(self, data, all_row_ids, full_idx=True)
         return data
 
     def initialize(self, init=None, ctx=None, default_init=initializer.Uniform(),
@@ -391,6 +393,8 @@ class Parameter(object):
     def reset_ctx(self, ctx):
         """Re-assign Parameter to other contexts.
 
+        Parameters
+        ----------
         ctx : Context or list of Context, default ``context.current_context()``.
             Assign Parameter to given context. If ctx is a list of Context, a
             copy will be made for each context.
@@ -576,7 +580,7 @@ class Constant(Parameter):
     will not change during training. But you can still update their values
     manually with the `set_data` method.
 
-    `Constant`s can be created with either::
+    `Constant` s can be created with either::
 
         const = mx.gluon.Constant('const', [[1,2],[3,4]])
 
@@ -587,8 +591,8 @@ class Constant(Parameter):
                 super(Block, self).__init__(**kwargs)
                 self.const = self.params.get_constant('const', [[1,2],[3,4]])
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     name : str
         Name of the parameter.
     value : array-like
@@ -723,6 +727,8 @@ class ParameterDict(object):
                         if matched:
                             param._shape = tuple(inferred_shape)
                             continue
+                    elif k == 'dtype' and np.dtype(v) == np.dtype(existing):
+                        continue
 
                     assert v is None or v == existing, \
                         "Cannot retrieve Parameter '%s' because desired attribute " \
@@ -734,12 +740,12 @@ class ParameterDict(object):
         return param
 
     def get_constant(self, name, value=None):
-        """Retrieves a :py:class:`Constant` with name ``self.prefix+name``. If not found,
+        """Retrieves a :py:class:`.Constant` with name ``self.prefix+name``. If not found,
         :py:func:`get` will first try to retrieve it from "shared" dict. If still not
-        found, :py:func:`get` will create a new :py:class:`Constant` with key-word
+        found, :py:func:`get` will create a new :py:class:`.Constant` with key-word
         arguments and insert it to self.
 
-        Constants
+        Parameters
         ----------
         name : str
             Name of the desired Constant. It will be prepended with this dictionary's
@@ -749,8 +755,8 @@ class ParameterDict(object):
 
         Returns
         -------
-        Constant
-            The created or retrieved :py:class:`Constant`.
+        :py:class:`.Constant`
+            The created or retrieved :py:class:`.Constant`.
         """
         name = self.prefix + name
         param = self._get_impl(name)
@@ -814,6 +820,8 @@ class ParameterDict(object):
     def reset_ctx(self, ctx):
         """Re-assign all Parameters to other contexts.
 
+        Parameters
+        ----------
         ctx : Context or list of Context, default :py:meth:`context.current_context()`.
             Assign Parameter to given context. If ctx is a list of Context, a
             copy will be made for each context.
@@ -846,6 +854,8 @@ class ParameterDict(object):
     def save(self, filename, strip_prefix=''):
         """Save parameters to file.
 
+        Parameters
+        ----------
         filename : str
             Path to parameter file.
         strip_prefix : str, default ''
@@ -870,6 +880,8 @@ class ParameterDict(object):
              ignore_extra=False, restore_prefix=''):
         """Load parameters from file.
 
+        Parameters
+        ----------
         filename : str
             Path to parameter file.
         ctx : Context or list of Context

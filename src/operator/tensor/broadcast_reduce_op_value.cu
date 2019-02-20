@@ -19,8 +19,8 @@
 
 /*!
  *  Copyright (c) 2016 by Contributors
- * \file broadcast_reduce_op.cu
- * \brief GPU Implementation of broadcast and reduce functions.
+ * \file broadcast_reduce_op_value.cu
+ * \brief GPU Implementation of broadcast and reduce functions based on value.
  */
 #include "./broadcast_reduce_op.h"
 
@@ -97,15 +97,18 @@ NNVM_REGISTER_OP(broadcast_axis)
 NNVM_REGISTER_OP(broadcast_to)
 .set_attr<FCompute>("FCompute<gpu>", BroadcastCompute<gpu>);
 
+NNVM_REGISTER_OP(broadcast_like)
+.set_attr<FCompute>("FCompute<gpu>", BroadcastCompute<gpu>);
+
 NNVM_REGISTER_OP(_broadcast_backward)
 .set_attr<FCompute>("FCompute<gpu>", ReduceAxesCompute<gpu, mshadow::red::sum>);
 
 NNVM_REGISTER_OP(norm)
-.set_attr<FCompute>("FCompute<gpu>", L2NormCompute<gpu>)
+.set_attr<FCompute>("FCompute<gpu>", LpNormCompute<gpu>)
 .set_attr<FComputeEx>("FComputeEx<gpu>", L2NormComputeEx<gpu>);
 
 NNVM_REGISTER_OP(_backward_norm)
-.set_attr<FCompute>("FCompute<gpu>", L2NormGradCompute<gpu>);
+.set_attr<FCompute>("FCompute<gpu>", LpNormGradCompute<gpu>);
 
 }  // namespace op
 }  // namespace mxnet

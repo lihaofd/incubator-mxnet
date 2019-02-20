@@ -276,8 +276,19 @@ class ElemwiseBinaryOp : public OpBase {
                        const NDArray &output);
 
   /*! \brief DNS -op- CSR binary operator for non-canonical NDArray */
-  template<typename xpu, typename OP>
-  static void DnsCsrDnsOp(mshadow::Stream<xpu> *s,
+  template<typename OP>
+  static void DnsCsrDnsOp(mshadow::Stream<cpu> *s,
+                          const nnvm::NodeAttrs &attrs,
+                          const OpContext &ctx,
+                          const NDArray &lhs,
+                          const NDArray &rhs,
+                          OpReqType req,
+                          const NDArray &output,
+                          const bool reverse);
+
+  /*! \brief DNS -op- CSR binary operator for non-canonical NDArray */
+  template<typename OP>
+  static void DnsCsrDnsOp(mshadow::Stream<gpu> *s,
                           const nnvm::NodeAttrs &attrs,
                           const OpContext &ctx,
                           const NDArray &lhs,
@@ -420,7 +431,7 @@ class ElemwiseBinaryOp : public OpBase {
     if (!dispatched && rsp && ContainsOnlyStorage(*in_attrs, kRowSparseStorage)) {
       // rsp, rsp, ... -> rsp
       dispatched = storage_type_assign(out_attrs, kRowSparseStorage,
-                                       dispatch_mode, dispatch_ex);
+                                       dispatch_mode, DispatchMode::kFComputeEx);
     }
     if (!dispatched && csr && ContainsOnlyStorage(*in_attrs, kCSRStorage)) {
       // csr, csr, ... -> csr
@@ -537,7 +548,7 @@ class ElemwiseBinaryOp : public OpBase {
       const NDArray& csr = (lhs_stype == kCSRStorage)? inputs[0] : inputs[1];
       const bool reverse = (lhs_stype == kCSRStorage);
 
-      DnsCsrDnsOp<xpu, OP>(s, attrs, ctx, dns, csr, req[0], outputs[0], reverse);
+      DnsCsrDnsOp<OP>(s, attrs, ctx, dns, csr, req[0], outputs[0], reverse);
     } else if (((lhs_stype == kRowSparseStorage && rhs_stype == kDefaultStorage) ||
                 (lhs_stype == kDefaultStorage && rhs_stype == kRowSparseStorage)) &&
                 out_stype == kDefaultStorage) {
@@ -635,7 +646,7 @@ class ElemwiseBinaryOp : public OpBase {
       if (in_stype == lhs_stype && (in_stype == kRowSparseStorage || in_stype == kCSRStorage)) {
         CHECK_EQ(outputs[0].storage_type(), in_stype);
         // rsp -> rsp, _. op requires 0-input returns 0-output
-        DCHECK_LT(fabs(static_cast<float>(LOP::Map(0))), 1e-5f);
+        DCHECK_LT(std::fabs(static_cast<float>(LOP::Map(0))), 1e-5f);
         UnaryOp::ComputeEx<xpu, LOP>(attrs, ctx, inputs, req, {outputs[0]});
       } else {
         LogUnimplementedOp(attrs, ctx, inputs, req, outputs);
@@ -646,7 +657,7 @@ class ElemwiseBinaryOp : public OpBase {
       if (in_stype == rhs_stype && (in_stype == kRowSparseStorage || in_stype == kCSRStorage)) {
         CHECK_EQ(outputs[0].storage_type(), in_stype);
         // rsp -> _, rsp. op requires 0-input returns 0-output
-        DCHECK_LT(fabs(static_cast<float>(ROP::Map(0))), 1e-5f);
+        DCHECK_LT(std::fabs(static_cast<float>(ROP::Map(0))), 1e-5f);
         UnaryOp::ComputeEx<xpu, ROP>(attrs, ctx, inputs, req, {outputs[1]});
       } else {
         LogUnimplementedOp(attrs, ctx, inputs, req, outputs);

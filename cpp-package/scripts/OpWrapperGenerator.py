@@ -77,6 +77,7 @@ class EnumType:
 
 class Arg:
     typeDict = {'boolean':'bool',\
+        'boolean or None':'dmlc::optional<bool>',\
         'Shape(tuple)':'Shape',\
         'Symbol':'Symbol',\
         'NDArray':'Symbol',\
@@ -94,8 +95,10 @@ class Arg:
         'int or None':'dmlc::optional<int>',\
         'long':'int64_t',\
         'double':'double',\
+        'double or None':'dmlc::optional<double>',\
         'Shape or None':'dmlc::optional<Shape>',\
-        'string':'const std::string&'}
+        'string':'const std::string&',\
+        'tuple of <float>':'nnvm::Tuple<mx_float>'}
     name = ''
     type = ''
     description = ''
@@ -135,6 +138,8 @@ class Arg:
             elif self.defaultString[0] == '[':
                 self.defaultString = 'Shape(' + self.defaultString[1:-1] + ")"
             elif self.type == 'dmlc::optional<int>':
+                self.defaultString = self.type + '(' + self.defaultString + ')'
+            elif self.type == 'dmlc::optional<bool>':
                 self.defaultString = self.type + '(' + self.defaultString + ')'
             elif typeString.startswith('caffe-layer-parameter'):
                 self.defaultString = 'textToCaffeLayerParameter(' + self.MakeCString(self.defaultString) + ')'
@@ -219,14 +224,14 @@ class Op:
             if arg.isEnum and use_name:
                 # comments
                 ret = ret + self.GenDescription(arg.description, \
-                                        '/*! \\breif ', \
+                                        '/*! \\brief ', \
                                         ' *        ')
                 ret = ret + " */\n"
                 # definition
                 ret = ret + arg.enum.GetDefinitionString(indent) + '\n'
         # create function comments
         ret = ret + self.GenDescription(self.description, \
-                                        '/*!\n * \\breif ', \
+                                        '/*!\n * \\brief ', \
                                         ' *        ')
         for arg in self.args:
             if arg.name != 'symbol_name' or use_name:
@@ -403,6 +408,7 @@ if __name__ == "__main__":
                       "#include \"mxnet-cpp/op_util.h\"\n"
                       "#include \"mxnet-cpp/operator.h\"\n"
                       "#include \"dmlc/optional.h\"\n"
+                      "#include \"nnvm/tuple.h\"\n"
                       "\n"
                       "namespace mxnet {\n"
                       "namespace cpp {\n"

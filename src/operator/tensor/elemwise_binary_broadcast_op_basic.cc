@@ -19,8 +19,8 @@
 
 /*!
  *  Copyright (c) 2016 by Contributors
- * \file elemwise_binary_scalar_op.cc
- * \brief CPU Implementation of unary function.
+ * \file elemwise_binary_broadcast_op_basic.cc
+ * \brief CPU Implementation of basic functions for elementwise binary broadcast operator.
  */
 #include "./elemwise_unary_op.h"
 #include "./elemwise_binary_op.h"
@@ -141,7 +141,7 @@ Example::
 
 Supported sparse operations:
 
-   broadcast_mul(csr, dense(1D)) = csr (CPU only)
+   broadcast_mul(csr, dense(1D)) = csr
 
 )code" ADD_FILELINE)
 .set_attr<FCompute>("FCompute<cpu>", BinaryBroadcastCompute<cpu, op::mshadow_op::mul>)
@@ -182,7 +182,7 @@ Example::
 
 Supported sparse operations:
 
-   broadcast_div(csr, dense(1D)) = csr (CPU only)
+   broadcast_div(csr, dense(1D)) = csr
 
 )code" ADD_FILELINE)
 .set_attr<FCompute>("FCompute<cpu>", BinaryBroadcastCompute<cpu, op::mshadow_op::div>)

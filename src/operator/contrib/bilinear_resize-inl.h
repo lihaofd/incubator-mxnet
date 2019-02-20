@@ -50,11 +50,17 @@ namespace op {
 struct BilinearSampleParam : public dmlc::Parameter<BilinearSampleParam> {
   int height;
   int width;
+  dmlc::optional<float> scale_height;
+  dmlc::optional<float> scale_width;
   DMLC_DECLARE_PARAMETER(BilinearSampleParam) {
-    DMLC_DECLARE_FIELD(height).set_range(1, 1000)
-    .describe("output height (required)");
-    DMLC_DECLARE_FIELD(width).set_range(1, 1000)
-    .describe("output width (required)");
+    DMLC_DECLARE_FIELD(height).set_default(1).set_range(1, 10000)
+    .describe("output height (required, but ignored if scale_height is defined)");
+    DMLC_DECLARE_FIELD(width).set_default(1).set_range(1, 10000)
+    .describe("output width (required, but ignored if scale_width is defined)");
+    DMLC_DECLARE_FIELD(scale_height).set_default(dmlc::optional<float>())
+    .describe("sampling scale of the height (optional, ignores height if defined)");
+    DMLC_DECLARE_FIELD(scale_width).set_default(dmlc::optional<float>())
+    .describe("sampling scale of the scale_width (optional, ignores width if defined)");
   }
 };
 
@@ -129,48 +135,22 @@ static bool BilinearSampleOpInferShape(const nnvm::NodeAttrs& attrs,
   const BilinearSampleParam& param = nnvm::get<BilinearSampleParam>(attrs.parsed);
   TShape dshape(in_shape->at(0));
   if (dshape.ndim() == 0) return false;
-  dshape[2] = param.height;
-  dshape[3] = param.width;
+  if (param.scale_height.has_value()) {
+    dshape[2] = static_cast<int>(param.scale_height.value() * in_shape->at(0)[2]);
+  } else {
+    dshape[2] = param.height;
+  }
+
+  if (param.scale_height.has_value()) {
+    dshape[3] = static_cast<int>(param.scale_width.value() * in_shape->at(0)[3]);
+  } else {
+    dshape[3] = param.width;
+  }
+
   out_shape->clear();
   out_shape->push_back(dshape);
   return true;
 }
-
-static bool BilinearSampleOpInferType(const nnvm::NodeAttrs& attrs,
-                                      std::vector<int> *in_type,
-                                      std::vector<int> *out_type) {
-  using namespace mshadow;
-  CHECK_EQ(in_type->size(), 1U);
-  int dtype = (*in_type)[0];
-  CHECK_NE(dtype, -1) << "First input must have specified type";
-  // For float16 input type beta, gamma, mean, and average are stored in float32.
-  // For other input types, these parameters have the same type as input
-  // NOTE: This requirement is from cuDNN (v. 4 and 5)
-  int dtype_param = 0;
-  MSHADOW_REAL_TYPE_SWITCH_EX(dtype, DTypeX, AccRealX, {
-      dtype_param = mshadow::DataType<AccRealX>::kFlag; });
-  out_type->clear();
-  out_type->push_back(dtype_param);
-  return true;
-}
-
-static inline bool BilinearSampleOpStorageType(const nnvm::NodeAttrs &attrs,
-                                               const int dev_mask,
-                                               DispatchMode *dispatch_mode,
-                                               std::vector<int> *in_attrs,
-                                               std::vector<int> *out_attrs) {
-  CHECK_EQ(in_attrs->size(), 1);
-  CHECK_EQ(out_attrs->size(), 1);
-  *dispatch_mode = DispatchMode::kFCompute;
-  for (int& v : *in_attrs) {
-    if (v == - 1) v = kDefaultStorage;
-  }
-  for (size_t i = 0; i < out_attrs->size(); i++) {
-    (*out_attrs)[i] = kDefaultStorage;
-  }
-  return true;
-}
-
 
 }  // namespace op
 }  // namespace mxnet

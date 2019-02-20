@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -22,5 +22,6 @@
 
 set -ex
 # install libraries for mxnet's perl package on ubuntu
+apt-get update || true
 apt-get install -y libmouse-perl pdl cpanminus swig libgraphviz-perl
 cpanm -q Function::Parameters Hash::Ordered PDL::CCS

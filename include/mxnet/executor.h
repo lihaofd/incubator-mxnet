@@ -166,6 +166,7 @@ class Executor {
                               std::unordered_map<std::string, NDArray>*
                                 shared_data_arrays = nullptr,
                               Executor* shared_exec = nullptr);
+
   /*!
    * \brief the prototype of user-defined monitor callback
    */
@@ -173,7 +174,7 @@ class Executor {
   /*!
    * \brief Install a callback to notify the completion of operation.
    */
-  virtual void SetMonitorCallback(const MonitorCallback& callback) {}
+  virtual void SetMonitorCallback(const MonitorCallback& callback, bool monitor_all = false) {}
 };  // class executor
 }  // namespace mxnet
 #endif  // MXNET_EXECUTOR_H_

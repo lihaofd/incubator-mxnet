@@ -23,7 +23,7 @@ import numpy as np
 import random
 from mxnet import gluon
 import platform
-from common import setup_module, with_seed
+from common import setup_module, with_seed, teardown
 from mxnet.gluon.data import DataLoader
 import mxnet.ndarray as nd
 from mxnet import context
@@ -65,8 +65,43 @@ def prepare_record():
 @with_seed()
 def test_recordimage_dataset():
     recfile = prepare_record()
-    dataset = gluon.data.vision.ImageRecordDataset(recfile)
+    fn = lambda x, y : (x, y)
+    dataset = gluon.data.vision.ImageRecordDataset(recfile).transform(fn)
     loader = gluon.data.DataLoader(dataset, 1)
+
+    for i, (x, y) in enumerate(loader):
+        assert x.shape[0] == 1 and x.shape[3] == 3
+        assert y.asscalar() == i
+
+def _dataset_transform_fn(x, y):
+    """Named transform function since lambda function cannot be pickled."""
+    return x, y
+
+def _dataset_transform_first_fn(x):
+    """Named transform function since lambda function cannot be pickled."""
+    return x
+
+@with_seed()
+def test_recordimage_dataset_with_data_loader_multiworker():
+    recfile = prepare_record()
+    dataset = gluon.data.vision.ImageRecordDataset(recfile)
+    loader = gluon.data.DataLoader(dataset, 1, num_workers=5)
+
+    for i, (x, y) in enumerate(loader):
+        assert x.shape[0] == 1 and x.shape[3] == 3
+        assert y.asscalar() == i
+
+    # with transform
+    dataset = gluon.data.vision.ImageRecordDataset(recfile).transform(_dataset_transform_fn)
+    loader = gluon.data.DataLoader(dataset, 1, num_workers=5)
+
+    for i, (x, y) in enumerate(loader):
+        assert x.shape[0] == 1 and x.shape[3] == 3
+        assert y.asscalar() == i
+
+    # with transform_first
+    dataset = gluon.data.vision.ImageRecordDataset(recfile).transform_first(_dataset_transform_first_fn)
+    loader = gluon.data.DataLoader(dataset, 1, num_workers=5)
 
     for i, (x, y) in enumerate(loader):
         assert x.shape[0] == 1 and x.shape[3] == 3
@@ -104,6 +139,13 @@ def test_image_folder_dataset():
     assert dataset.synsets == ['test_images']
     assert len(dataset.items) == 16
 
+@with_seed()
+def test_list_dataset():
+    for num_worker in range(0, 3):
+        data = mx.gluon.data.DataLoader([([1,2], 0), ([3, 4], 1)], batch_size=1, num_workers=num_worker)
+        for d, l in data:
+            pass
+
 
 class Dataset(gluon.data.Dataset):
     def __len__(self):
@@ -111,106 +153,132 @@ class Dataset(gluon.data.Dataset):
     def __getitem__(self, key):
         return mx.nd.full((10,), key)
 
-@unittest.skip("Somehow fails with MKL. Cannot reproduce locally")
+@with_seed()
 def test_multi_worker():
     data = Dataset()
-    loader = gluon.data.DataLoader(data, batch_size=1, num_workers=5)
-    for i, batch in enumerate(loader):
-        assert (batch.asnumpy() == i).all()
+    for thread_pool in [True, False]:
+        loader = gluon.data.DataLoader(data, batch_size=1, num_workers=5, thread_pool=thread_pool)
+        for i, batch in enumerate(loader):
+            assert (batch.asnumpy() == i).all()
+
+class _Dummy(Dataset):
+    """Dummy dataset for randomized shape arrays."""
+    def __init__(self, random_shape):
+        self.random_shape = random_shape
+
+    def __getitem__(self, idx):
+        key = idx
+        if self.random_shape:
+            out = np.random.uniform(size=(random.randint(1000, 1100), 40))
+            labels = np.random.uniform(size=(random.randint(10, 15)))
+        else:
+            out = np.random.uniform(size=(1000, 40))
+            labels = np.random.uniform(size=(10))
+        return key, out, labels
+
+    def __len__(self):
+        return 50
+
+def _batchify_list(data):
+    """
+    return list of ndarray without stack/concat/pad
+    """
+    if isinstance(data, (tuple, list)):
+        return list(data)
+    if isinstance(data, mx.nd.NDArray):
+        return [data]
+    return data
+
+def _batchify(data):
+    """
+    Collate data into batch. Use shared memory for stacking.
+    :param data: a list of array, with layout of 'NTC'.
+    :return either x  and x's unpadded lengths, or x, x's unpadded lengths, y and y's unpadded lengths
+            if labels are not supplied.
+    """
+
+    # input layout is NTC
+    keys, inputs, labels = [item[0] for item in data], [item[1] for item in data], \
+                           [item[2] for item in data]
+
+    if len(data) > 1:
+        max_data_len = max([seq.shape[0] for seq in inputs])
+        max_labels_len = 0 if not labels else max([seq.shape[0] for seq in labels])
+    else:
+        max_data_len = inputs[0].shape[0]
+        max_labels_len = 0 if not labels else labels[0].shape[0]
+
+    x_lens = [item.shape[0] for item in inputs]
+    y_lens = [item.shape[0] for item in labels]
+
+    for i, seq in enumerate(inputs):
+        pad_len = max_data_len - seq.shape[0]
+        inputs[i] = np.pad(seq, ((0, pad_len), (0, 0)), 'constant', constant_values=0)
+        labels[i] = np.pad(labels[i], (0, max_labels_len - labels[i].shape[0]),
+                           'constant', constant_values=-1)
+
+    inputs = np.asarray(inputs, dtype=np.float32)
+    if labels is not None:
+        labels = np.asarray(labels, dtype=np.float32)
+    inputs = inputs.transpose((1, 0, 2))
+    labels = labels.transpose((1, 0))
+
+    return (nd.array(inputs, dtype=inputs.dtype, ctx=context.Context('cpu_shared', 0)),
+            nd.array(x_lens, ctx=context.Context('cpu_shared', 0))) \
+        if labels is None else (
+        nd.array(inputs, dtype=inputs.dtype, ctx=context.Context('cpu_shared', 0)),
+        nd.array(x_lens, ctx=context.Context('cpu_shared', 0)),
+        nd.array(labels, dtype=labels.dtype, ctx=context.Context('cpu_shared', 0)),
+        nd.array(y_lens, ctx=context.Context('cpu_shared', 0)))
 
 @with_seed()
 def test_multi_worker_forked_data_loader():
-    """
-    Test should successfully run its course of multi-process/forked data loader without errors
-    """
-    class Dummy(Dataset):
-        def __init__(self, random_shape):
-            self.random_shape = random_shape
+    data = _Dummy(False)
+    loader = DataLoader(data, batch_size=40, batchify_fn=_batchify, num_workers=2)
+    for epoch in range(1):
+        for i, data in enumerate(loader):
+            pass
 
-        def __getitem__(self, idx):
-            key = idx
-            if self.random_shape:
-                out = np.random.uniform(size=(random.randint(1000, 1100), 40))
-                labels = np.random.uniform(size=(random.randint(10, 15)))
-            else:
-                out = np.random.uniform(size=(1000, 40))
-                labels = np.random.uniform(size=(10))
-            return key, out, labels
+    data = _Dummy(True)
+    loader = DataLoader(data, batch_size=40, batchify_fn=_batchify_list, num_workers=2)
+    for epoch in range(1):
+        for i, data in enumerate(loader):
+            pass
 
-        def __len__(self):
-            return 50
-
-        def batchify_list(self, data):
-            """
-            return list of ndarray without stack/concat/pad
-            """
-            if isinstance(data, (tuple, list)):
-                return list(data)
-            if isinstance(data, mx.nd.NDArray):
-                return [data]
-            return data
-
-        def batchify(self, data):
-            """
-            Collate data into batch. Use shared memory for stacking.
-
-            :param data: a list of array, with layout of 'NTC'.
-            :return either x  and x's unpadded lengths, or x, x's unpadded lengths, y and y's unpadded lengths
-                    if labels are not supplied.
-            """
-
-            # input layout is NTC
-            keys, inputs, labels = [item[0] for item in data], [item[1] for item in data], \
-                                   [item[2] for item in data]
-
-            if len(data) > 1:
-                max_data_len = max([seq.shape[0] for seq in inputs])
-                max_labels_len = 0 if not labels else max([seq.shape[0] for seq in labels])
-            else:
-                max_data_len = inputs[0].shape[0]
-                max_labels_len = 0 if not labels else labels[0].shape[0]
-
-            x_lens = [item.shape[0] for item in inputs]
-            y_lens = [item.shape[0] for item in labels]
-
-            for i, seq in enumerate(inputs):
-                pad_len = max_data_len - seq.shape[0]
-                inputs[i] = np.pad(seq, ((0, pad_len), (0, 0)), 'constant', constant_values=0)
-                labels[i] = np.pad(labels[i], (0, max_labels_len - labels[i].shape[0]),
-                                   'constant', constant_values=-1)
-
-            inputs = np.asarray(inputs, dtype=np.float32)
-            if labels is not None:
-                labels = np.asarray(labels, dtype=np.float32)
-            inputs = inputs.transpose((1, 0, 2))
-            labels = labels.transpose((1, 0))
-
-            return (nd.array(inputs, dtype=inputs.dtype, ctx=context.Context('cpu_shared', 0)),
-                    nd.array(x_lens, ctx=context.Context('cpu_shared', 0))) \
-                if labels is None else (
-                nd.array(inputs, dtype=inputs.dtype, ctx=context.Context('cpu_shared', 0)),
-                nd.array(x_lens, ctx=context.Context('cpu_shared', 0)),
-                nd.array(labels, dtype=labels.dtype, ctx=context.Context('cpu_shared', 0)),
-                nd.array(y_lens, ctx=context.Context('cpu_shared', 0)))
+@with_seed()
+def test_multi_worker_dataloader_release_pool():
+    # will trigger too many open file if pool is not released properly
+    for _ in range(100):
+        A = np.random.rand(999, 2000)
+        D = mx.gluon.data.DataLoader(A, batch_size=8, num_workers=8)
+        the_iter = iter(D)
+        next(the_iter)
+        del the_iter
+        del D
 
 
-    # This test is pointless on Windows because Windows doesn't fork
-    if platform.system() != 'Windows':
-        data = Dummy(True)
-        loader = DataLoader(data, batch_size=40, batchify_fn=data.batchify, num_workers=2)
-        for epoch in range(1):
-            for i, data in enumerate(loader):
-                if i % 100 == 0:
-                    print(data)
-                    print('{}:{}'.format(epoch, i))
+def test_dataloader_context():
+    X = np.random.uniform(size=(10, 20))
+    dataset = gluon.data.ArrayDataset(X)
+    default_dev_id = 0
+    custom_dev_id = 1
 
-        data = Dummy(True)
-        loader = DataLoader(data, batch_size=40, batchify_fn=data.batchify_list, num_workers=2)
-        for epoch in range(1):
-            for i, data in enumerate(loader):
-                if i % 100 == 0:
-                    print(data)
-                    print('{}:{}'.format(epoch, i))
+    # use non-pinned memory
+    loader1 = gluon.data.DataLoader(dataset, 8)
+    for _, x in enumerate(loader1):
+        assert x.context == context.cpu(default_dev_id)
+
+    # use pinned memory with default device id
+    loader2 = gluon.data.DataLoader(dataset, 8, pin_memory=True)
+    for _, x in enumerate(loader2):
+        assert x.context == context.cpu_pinned(default_dev_id)
+
+    # use pinned memory with custom device id
+    loader3 = gluon.data.DataLoader(dataset, 8, pin_memory=True,
+                                    pin_device_id=custom_dev_id)
+    for _, x in enumerate(loader3):
+        assert x.context == context.cpu_pinned(custom_dev_id)
+
 
 if __name__ == '__main__':
     import nose

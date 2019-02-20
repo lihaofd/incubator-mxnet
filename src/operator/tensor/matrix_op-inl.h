@@ -37,6 +37,7 @@
 #include "broadcast_reduce_op.h"
 #include "./init_op.h"
 #include "../../common/static_array.h"
+#include "./slice-inl.h"
 
 #if MXNET_USE_CUDA
 #include <thrust/device_vector.h>
@@ -86,7 +87,7 @@ inline TShape InferReshapeShape(const nnvm::Tuple<IType>& shape,
   }
   auto dshape_len = dshape_vec.size();
   auto params_len = param_shape_vec.size();
-  for (index_t i = 0; i < params_len; ++i) {
+  for (size_t i = 0; i < params_len; ++i) {
     IType proposed_dim = param_shape_vec[i];
     if (proposed_dim == 0) {
       // keep same
@@ -122,7 +123,7 @@ inline TShape InferReshapeShape(const nnvm::Tuple<IType>& shape,
       CHECK(d1 != -1 || d2 != -1) << "Split dims cannot both be -1.";
       if (d1 == -1) d1 = d0 / d2;
       if (d2 == -1) d2 = d0 / d1;
-      CHECK_EQ(d1 * d2, static_cast<IType>(d0)) <<
+      CHECK(d1 * d2 == static_cast<IType>(d0) || static_cast<IType>(d0) == IType(0)) <<
         "Split dims " << d1 << ", " << d2 << " do not divide original dim " << d0;
       tmp.push_back(d1);
       tmp.push_back(d2);
@@ -151,13 +152,36 @@ inline TShape InferReshapeShape(const nnvm::Tuple<IType>& shape,
   return oshape;
 }
 
+inline bool ReverseReshapeInferShape(TShape *in, const TShape& out) {
+  if (in->Size() && out.Size()) {
+    return true;
+  } else if (!out.Size()) {
+    return false;
+  } else {
+    int zero_axis = -1;
+    int non_zero_prod = 1;
+    for (index_t i = 0; i < in->ndim(); i++) {
+      if ((*in)[i] == 0) {
+        if (zero_axis != -1)
+          return false;  // more than 1 zero found.
+        else
+          zero_axis = i;
+      } else {
+        non_zero_prod *= (*in)[i];
+      }
+    }
+    (*in)[zero_axis] = out.Size() / non_zero_prod;
+    return true;
+  }
+}
+
 inline bool ReshapeShape(const nnvm::NodeAttrs& attrs,
-                             std::vector<TShape> *in_attrs,
-                             std::vector<TShape> *out_attrs) {
+                         std::vector<TShape> *in_attrs,
+                         std::vector<TShape> *out_attrs) {
   const ReshapeParam& param_ = nnvm::get<ReshapeParam>(attrs.parsed);
   CHECK_EQ(in_attrs->size(), 1U) << "Input: [data]";
   CHECK_EQ(out_attrs->size(), 1U);
-  const TShape &dshape = (*in_attrs)[0];
+  TShape &dshape = (*in_attrs)[0];
   if (dshape.ndim() == 0) return false;
   TShape oshape;
   if (param_.shape.ndim() != 0) {
@@ -182,14 +206,15 @@ inline bool ReshapeShape(const nnvm::NodeAttrs& attrs,
       oshape[inf_idx] = dshape.Size() / oshape.Size();
     }
   } else {
-    return (*out_attrs)[0].ndim();
+    return (*out_attrs)[0].ndim() && ReverseReshapeInferShape(&(*in_attrs)[0], (*out_attrs)[0]);
   }
+  ReverseReshapeInferShape(&dshape, oshape);
   CHECK_EQ(oshape.Size(), dshape.Size())
     << "Target shape size is different to source. "
     << "Target: " << oshape
     << "\nSource: " << dshape;
   SHAPE_ASSIGN_CHECK(*out_attrs, 0, oshape);
-  return true;
+  return ReverseReshapeInferShape(&(*in_attrs)[0], (*out_attrs)[0]);
 }
 
 inline bool FlattenShape(const nnvm::NodeAttrs& attrs,
@@ -374,19 +399,15 @@ inline bool ExpandDimShape(const nnvm::NodeAttrs& attrs,
   return true;
 }
 
-struct SliceParam : public dmlc::Parameter<SliceParam> {
-  nnvm::Tuple<dmlc::optional<int>> begin, end;
-  nnvm::Tuple<dmlc::optional<int>> step;
-  DMLC_DECLARE_PARAMETER(SliceParam) {
-    DMLC_DECLARE_FIELD(begin)
-    .describe("starting indices for the slice operation, supports negative indices.");
-    DMLC_DECLARE_FIELD(end)
-    .describe("ending indices for the slice operation, supports negative indices.");
-    DMLC_DECLARE_FIELD(step)
-    .set_default(nnvm::Tuple<dmlc::optional<int>>())
-    .describe("step for the slice operation, supports negative values.");
+// Currently MKLDNN only supports step = 1 or step has no value
+inline bool SupportMKLDNNSlice(const SliceParam& param) {
+  if (param.step.ndim() == 0U) return true;
+  for (uint32_t i = 0; i < param.step.ndim(); ++i) {
+    if (param.step[i].has_value() && param.step[i].value() != 1)
+      return false;
   }
-};
+  return true;
+}
 
 inline bool SliceForwardInferStorageType(const nnvm::NodeAttrs& attrs,
                                          const int dev_mask,
@@ -408,9 +429,19 @@ inline bool SliceForwardInferStorageType(const nnvm::NodeAttrs& attrs,
       && (!param.step[0].has_value() || param.step[0].value() == 1)) {
     trivial_step = true;
   }
-  if (!dispatched && in_stype == kDefaultStorage) {
-    dispatched = storage_type_assign(&out_stype, kDefaultStorage,
-                                     dispatch_mode, DispatchMode::kFCompute);
+
+  if (in_stype == kDefaultStorage) {
+#if MXNET_USE_MKLDNN == 1
+    if (dev_mask == Context::kCPU && MKLDNNEnvSet()
+        && SupportMKLDNNSlice(param)) {
+      dispatched = storage_type_assign(&out_stype, kDefaultStorage,
+                                       dispatch_mode, dispatch_ex);
+    }
+#endif
+    if (!dispatched) {
+      dispatched = storage_type_assign(&out_stype, kDefaultStorage,
+                                       dispatch_mode, DispatchMode::kFCompute);
+    }
   }
 
   if (!dispatched && in_stype == kCSRStorage && trivial_step) {
@@ -602,11 +633,10 @@ inline void GetIndexRange(const TShape& dshape,
                           const nnvm::Tuple<dmlc::optional<int>>& param_begin,
                           const nnvm::Tuple<dmlc::optional<int>>& param_end,
                           const nnvm::Tuple<dmlc::optional<int>>& param_step,
-                          common::StaticArray<int, ndim>* begin,
-                          common::StaticArray<int, ndim>* end,
-                          common::StaticArray<int, ndim>* step) {
+                          common::StaticArray<index_t, ndim>* begin,
+                          common::StaticArray<index_t, ndim>* end,
+                          common::StaticArray<index_t, ndim>* step) {
   CHECK_NE(dshape.ndim(), 0U);
-  CHECK_NE(dshape.Size(), 0U);
   CHECK_LE(param_begin.ndim(), dshape.ndim())
     << "Slicing axis exceeds data dimensions";
   CHECK_LE(param_end.ndim(), dshape.ndim())
@@ -623,8 +653,8 @@ inline void GetIndexRange(const TShape& dshape,
   }
 
   for (index_t i = 0; i < param_begin.ndim(); ++i) {
-    int b = 0, e = dshape[i], s = 1;
-    const int len = dshape[i];
+    index_t b = 0, e = dshape[i], s = 1;
+    const index_t len = dshape[i];
     if (param_step.ndim() != 0U) {
       const auto& opt_step_val = param_step[i];
       if (opt_step_val.has_value()) {
@@ -633,32 +663,36 @@ inline void GetIndexRange(const TShape& dshape,
       }
     }
 
-    if (param_begin[i].has_value()) {
-      b = param_begin[i].value();
-      if (b < 0) {
-        b += len;
-        CHECK_GE(b, 0) << "slicing with begin[" << i << "]="
-                       << b - len << " exceeds limit of " << len;
+    if (len) {
+      if (param_begin[i].has_value()) {
+        b = param_begin[i].value();
+        if (b < 0) {
+          b += len;
+          CHECK_GE(b, 0) << "slicing with begin[" << i << "]="
+                         << b - len << " exceeds limit of " << len;
+        }
+      } else if (s < 0) {
+        b = len - 1;
       }
-    } else if (s < 0) {
-      b = len - 1;
-    }
-    CHECK_LT(b, len) << "slicing with begin[" << i << "]="
-                     << b << " exceends limit of " << len;
+      CHECK_LT(b, len) << "slicing with begin[" << i << "]="
+                       << b << " exceends limit of " << len;
 
-    if (param_end[i].has_value()) {
-      e = param_end[i].value();
-      if (e < 0) {
-        e += len;
-        CHECK_GE(e, 0) << "slicing with end[" << i << "]="
-                       << e - len << " exceeds limit of " << len;
+      if (param_end[i].has_value()) {
+        e = param_end[i].value();
+        if (e < 0) {
+          e += len;
+          CHECK_GE(e, 0) << "slicing with end[" << i << "]="
+                         << e - len << " exceeds limit of " << len;
+        }
+      } else if (s < 0) {
+        e = -1;
       }
-    } else if (s < 0) {
-      e = -1;
+      CHECK_LE(e, len) << "slicing with end[" << i << "]="
+                       << e << " exceeds limit of " << len;
+    } else {
+      b = 0;
+      e = 0;
     }
-    CHECK_LE(e, len) << "slicing with end[" << i << "]="
-                     << e << " exceeds limit of " << len;
-
     (*begin)[i] = b;
     (*end)[i] = e;
     (*step)[i] = s;
@@ -673,15 +707,17 @@ inline void GetIndexRange(const TShape& dshape,
 inline void SetSliceOpOutputDimSize(const index_t i, const int b,
                                     const int e, const int s,
                                     TShape* oshape) {
-  if (s > 0) {
-    CHECK_LT(b, e) << "slicing with begin=[" << i << "]=" << b << ", end[" << i << "]="
-                   << e << ", and step[" << i << "]=" << s << " is invalid";
-    (*oshape)[i] = (e - b - 1) / s + 1;
-  } else {
-    CHECK_LT(e, b) << "slicing with begin=[" << i << "]=" << b << ", end[" << i << "]="
-                   << e << ", and step[" << i << "]=" << s << " is invalid";
-    (*oshape)[i] = (b - e - 1) / (-s) + 1;
-  }
+  if (e != b) {
+    if (s > 0) {
+      CHECK_LT(b, e) << "slicing with begin=[" << i << "]=" << b << ", end[" << i << "]="
+                     << e << ", and step[" << i << "]=" << s << " is invalid";
+      (*oshape)[i] = (e - b - 1) / s + 1;
+    } else {
+      CHECK_LT(e, b) << "slicing with begin=[" << i << "]=" << b << ", end[" << i << "]="
+                     << e << ", and step[" << i << "]=" << s << " is invalid";
+      (*oshape)[i] = (b - e - 1) / (-s) + 1;
+    }
+  }  // else leave oshape[i] as 0 for partial infer
 }
 
 inline bool SliceOpShape(const nnvm::NodeAttrs& attrs,
@@ -690,11 +726,12 @@ inline bool SliceOpShape(const nnvm::NodeAttrs& attrs,
   CHECK_EQ(in_attrs->size(), 1U);
   CHECK_EQ(out_attrs->size(), 1U);
   const TShape& dshape = (*in_attrs)[0];
-  if (dshape.ndim() == 0 || dshape.Size() == 0) return false;
+  if (dshape.ndim() == 0) return false;
   const SliceParam& param = nnvm::get<SliceParam>(attrs.parsed);
   TShape oshape = dshape;
+
   MXNET_NDIM_SWITCH(dshape.ndim(), ndim, {
-    common::StaticArray<int, ndim> begin, end, step;
+    common::StaticArray<index_t, ndim> begin, end, step;
     GetIndexRange(dshape, param.begin, param.end, param.step, &begin, &end, &step);
     for (index_t i = 0; i < param.begin.ndim(); ++i) {
       const int b = begin[i], e = end[i], s = step[i];
@@ -703,7 +740,7 @@ inline bool SliceOpShape(const nnvm::NodeAttrs& attrs,
   });
 
   SHAPE_ASSIGN_CHECK(*out_attrs, 0, oshape);
-  return oshape.ndim() != 0 && oshape.Size() != 0;
+  return !shape_is_none(dshape) && !shape_is_none(oshape);
 }
 
 template<int ndim, int req, typename xpu>
@@ -713,19 +750,19 @@ template<int ndim, int req>
 struct slice_forward<ndim, req, gpu> {
   // i is the i-th row after flattening out into 2D tensor
   template<typename DType>
-  MSHADOW_XINLINE static void Map(int i, DType* out, const DType* data,
+  MSHADOW_XINLINE static void Map(index_t i, DType* out, const DType* data,
                                   const mshadow::Shape<ndim> dshape,
                                   const mshadow::Shape<ndim> oshape,
-                                  const common::StaticArray<int, ndim> begin,
-                                  const common::StaticArray<int, ndim> step) {
-    const int data_last_dim_size = dshape[ndim-1];
-    const int out_last_dim_size = oshape[ndim-1];
-    const int step_last_dim = step[ndim-1];
-    const int begin_last_dim = begin[ndim-1];
-    const int j = i % out_last_dim_size;
-    int irow = 0;  // row id of flattend 2D data
-    int stride = 1;
-    int idx = i / out_last_dim_size;
+                                  const common::StaticArray<index_t, ndim> begin,
+                                  const common::StaticArray<index_t, ndim> step) {
+    const index_t data_last_dim_size = dshape[ndim-1];
+    const index_t out_last_dim_size = oshape[ndim-1];
+    const index_t step_last_dim = step[ndim-1];
+    const index_t begin_last_dim = begin[ndim-1];
+    const index_t j = i % out_last_dim_size;
+    index_t irow = 0;  // row id of flattend 2D data
+    index_t stride = 1;
+    index_t idx = i / out_last_dim_size;
     #pragma unroll
     for (int k = ndim - 2; k >= 0; --k) {
       irow += stride * ((idx % oshape[k]) * step[k] + begin[k]);
@@ -741,20 +778,20 @@ template<int ndim, int req>
 struct slice_forward<ndim, req, cpu> {
   // i is the i-th row after flattening out into 2D tensor
   template<typename DType>
-  MSHADOW_XINLINE static void Map(int i, DType* out, const DType* data,
+  MSHADOW_XINLINE static void Map(index_t i, DType* out, const DType* data,
                                   const mshadow::Shape<ndim> dshape,
                                   const mshadow::Shape<ndim> oshape,
-                                  const common::StaticArray<int, ndim> begin,
-                                  const common::StaticArray<int, ndim> step) {
-    const int data_last_dim_size = dshape[ndim-1];
-    const int out_last_dim_size = oshape[ndim-1];
-    const int step_last_dim = step[ndim-1];
-    const int begin_last_dim = begin[ndim-1];
-    int out_offset = i * out_last_dim_size;
-    for (int j = 0; j < out_last_dim_size; ++j) {
-      int irow = 0;  // row id of flattend 2D data
-      int stride = 1;
-      int idx = i;
+                                  const common::StaticArray<index_t, ndim> begin,
+                                  const common::StaticArray<index_t, ndim> step) {
+    const index_t data_last_dim_size = dshape[ndim-1];
+    const index_t out_last_dim_size = oshape[ndim-1];
+    const index_t step_last_dim = step[ndim-1];
+    const index_t begin_last_dim = begin[ndim-1];
+    index_t out_offset = i * out_last_dim_size;
+    for (index_t j = 0; j < out_last_dim_size; ++j) {
+      index_t irow = 0;  // row id of flattend 2D data
+      index_t stride = 1;
+      index_t idx = i;
       #pragma unroll
       for (int k = ndim - 2; k >= 0; --k) {
         irow += stride * ((idx % oshape[k]) * step[k] + begin[k]);
@@ -783,11 +820,11 @@ void SliceOpForward(const nnvm::NodeAttrs& attrs,
   const TBlob& out = outputs[0];
   const SliceParam& param = nnvm::get<SliceParam>(attrs.parsed);
   MXNET_NDIM_SWITCH(data.ndim(), ndim, {
-    common::StaticArray<int, ndim> begin, end, step;
+    common::StaticArray<index_t, ndim> begin, end, step;
     GetIndexRange(data.shape_, param.begin, param.end, param.step, &begin, &end, &step);
     MSHADOW_TYPE_SWITCH(out.type_flag_, DType, {
       MXNET_ASSIGN_REQ_SWITCH(req[0], Req, {
-        int num_threads = out.shape_.FlatTo2D()[0];
+        size_t num_threads = out.shape_.FlatTo2D()[0];
         if (std::is_same<xpu, gpu>::value) {
           num_threads *= out.shape_.get<ndim>()[ndim - 1];
         }
@@ -806,20 +843,20 @@ template<int ndim, int req>
 struct slice_assign<ndim, req, cpu> {
   // i is the i-th row after flattening out into 2D tensor
   template<typename DType>
-  MSHADOW_XINLINE static void Map(int i, DType* out, const DType* val,
+  MSHADOW_XINLINE static void Map(index_t i, DType* out, const DType* val,
                                   const mshadow::Shape<ndim> oshape,
                                   const mshadow::Shape<ndim> vshape,
-                                  const common::StaticArray<int, ndim> begin,
-                                  const common::StaticArray<int, ndim> step) {
-    const int data_last_dim_size = oshape[ndim-1];
-    const int out_last_dim_size = vshape[ndim-1];
-    const int step_last_dim = step[ndim-1];
-    const int begin_last_dim = begin[ndim-1];
-    int offset = i * out_last_dim_size;
-    for (int j = 0; j < out_last_dim_size; ++j) {
-      int irow = 0;  // row id of flattend 2D out
-      int stride = 1;
-      int idx = i;
+                                  const common::StaticArray<index_t, ndim> begin,
+                                  const common::StaticArray<index_t, ndim> step) {
+    const index_t data_last_dim_size = oshape[ndim-1];
+    const index_t out_last_dim_size = vshape[ndim-1];
+    const index_t step_last_dim = step[ndim-1];
+    const index_t begin_last_dim = begin[ndim-1];
+    index_t offset = i * out_last_dim_size;
+    for (index_t j = 0; j < out_last_dim_size; ++j) {
+      index_t irow = 0;  // row id of flattend 2D out
+      index_t stride = 1;
+      index_t idx = i;
       #pragma unroll
       for (int k = ndim - 2; k >= 0; --k) {
         irow += stride * ((idx % vshape[k]) * step[k] + begin[k]);
@@ -836,19 +873,19 @@ template<int ndim, int req>
 struct slice_assign<ndim, req, gpu> {
   // i is the i-th row after flattening out into 2D tensor
   template<typename DType>
-  MSHADOW_XINLINE static void Map(int i, DType* out, const DType* val,
+  MSHADOW_XINLINE static void Map(index_t i, DType* out, const DType* val,
                                   const mshadow::Shape<ndim> oshape,
                                   const mshadow::Shape<ndim> vshape,
-                                  const common::StaticArray<int, ndim> begin,
-                                  const common::StaticArray<int, ndim> step) {
-    const int data_last_dim_size = oshape[ndim-1];
-    const int out_last_dim_size = vshape[ndim-1];
-    const int step_last_dim = step[ndim-1];
-    const int begin_last_dim = begin[ndim-1];
-    const int j = i % out_last_dim_size;
-    int irow = 0;  // row id of flattend 2D out
-    int stride = 1;
-    int idx = i / out_last_dim_size;
+                                  const common::StaticArray<index_t, ndim> begin,
+                                  const common::StaticArray<index_t, ndim> step) {
+    const index_t data_last_dim_size = oshape[ndim-1];
+    const index_t out_last_dim_size = vshape[ndim-1];
+    const index_t step_last_dim = step[ndim-1];
+    const index_t begin_last_dim = begin[ndim-1];
+    const index_t j = i % out_last_dim_size;
+    index_t irow = 0;  // row id of flattend 2D out
+    index_t stride = 1;
+    index_t idx = i / out_last_dim_size;
     #pragma unroll
     for (int k = ndim - 2; k >= 0; --k) {
       irow += stride * ((idx % vshape[k]) * step[k] + begin[k]);
@@ -881,7 +918,7 @@ void SliceOpBackward(const nnvm::NodeAttrs& attrs,
     LOG(FATAL) << "_slice_backward does not support kWriteInplace";
   }
   MXNET_NDIM_SWITCH(ograd.ndim(), ndim, {
-    common::StaticArray<int, ndim> begin, end, step;
+    common::StaticArray<index_t, ndim> begin, end, step;
     GetIndexRange(igrad.shape_, param.begin, param.end, param.step, &begin, &end, &step);
     MSHADOW_TYPE_SWITCH(ograd.type_flag_, DType, {
       MXNET_ASSIGN_REQ_SWITCH(req[0], Req, {
@@ -907,7 +944,7 @@ inline bool SliceAssignOpShape(const nnvm::NodeAttrs& attrs,
   TShape vshape = dshape;  // vshape is the value shape on the right hand side
   const SliceParam& param = nnvm::get<SliceParam>(attrs.parsed);
   MXNET_NDIM_SWITCH(dshape.ndim(), ndim, {
-    common::StaticArray<int, ndim> begin, end, step;
+    common::StaticArray<index_t, ndim> begin, end, step;
     GetIndexRange(dshape, param.begin, param.end, param.step, &begin, &end, &step);
     for (index_t i = 0; i < param.begin.ndim(); ++i) {
       const int b = begin[i], e = end[i], s = step[i];
@@ -945,7 +982,7 @@ void SliceAssignOpForward(const nnvm::NodeAttrs& attrs,
 
   const SliceParam& param = nnvm::get<SliceParam>(attrs.parsed);
   MXNET_NDIM_SWITCH(data.ndim(), ndim, {
-    common::StaticArray<int, ndim> begin, end, step;
+    common::StaticArray<index_t, ndim> begin, end, step;
     GetIndexRange(data.shape_, param.begin, param.end, param.step, &begin, &end, &step);
     MSHADOW_TYPE_SWITCH(out.type_flag_, DType, {
       MXNET_ASSIGN_REQ_SWITCH(req[0], Req, {
@@ -962,7 +999,7 @@ void SliceAssignOpForward(const nnvm::NodeAttrs& attrs,
 }
 
 struct SliceAssignScalarParam : public dmlc::Parameter<SliceAssignScalarParam> {
-  real_t scalar;
+  double scalar;
   nnvm::Tuple<dmlc::optional<int>> begin, end;
   nnvm::Tuple<dmlc::optional<int>> step;
   DMLC_DECLARE_PARAMETER(SliceAssignScalarParam) {
@@ -994,20 +1031,20 @@ template<int ndim>
 struct slice_assign_scalar {
   // i is the i-th row after flattening out into 2D tensor
   template<typename DType>
-  MSHADOW_XINLINE static void Map(int i, DType* out, const DType val,
+  MSHADOW_XINLINE static void Map(index_t i, DType* out, const DType val,
                                   const OpReqType req,
                                   const mshadow::Shape<ndim> oshape,
                                   const mshadow::Shape<ndim> vshape,
-                                  const common::StaticArray<int, ndim> begin,
-                                  const common::StaticArray<int, ndim> step) {
-    const int data_last_dim_size = oshape[ndim-1];
-    const int out_last_dim_size = vshape[ndim-1];
-    const int step_last_dim = step[ndim-1];
-    const int begin_last_dim = begin[ndim-1];
-    for (int j = 0; j < out_last_dim_size; ++j) {
-      int irow = 0;  // row id of flattend 2D out
-      int stride = 1;
-      int idx = i;
+                                  const common::StaticArray<index_t, ndim> begin,
+                                  const common::StaticArray<index_t, ndim> step) {
+    const index_t data_last_dim_size = oshape[ndim-1];
+    const index_t out_last_dim_size = vshape[ndim-1];
+    const index_t step_last_dim = step[ndim-1];
+    const index_t begin_last_dim = begin[ndim-1];
+    for (index_t j = 0; j < out_last_dim_size; ++j) {
+      index_t irow = 0;  // row id of flattend 2D out
+      index_t stride = 1;
+      index_t idx = i;
       #pragma unroll
       for (int k = ndim - 2; k >= 0; --k) {
         irow += stride * ((idx % vshape[k]) * step[k] + begin[k]);
@@ -1046,7 +1083,7 @@ void SliceAssignScalarOpForward(const nnvm::NodeAttrs& attrs,
   TShape vshape = data.shape_;
   const SliceAssignScalarParam& param = nnvm::get<SliceAssignScalarParam>(attrs.parsed);
   MXNET_NDIM_SWITCH(data.ndim(), ndim, {
-    common::StaticArray<int, ndim> begin, end, step;
+    common::StaticArray<index_t, ndim> begin, end, step;
     GetIndexRange(data.shape_, param.begin, param.end, param.step, &begin, &end, &step);
     for (index_t i = 0; i < param.begin.ndim(); ++i) {
       const int b = begin[i], e = end[i], s = step[i];
@@ -1077,7 +1114,7 @@ struct SliceAxisParam : public dmlc::Parameter<SliceAxisParam> {
 };
 
 inline void GetSliceAxisParams(const SliceAxisParam& param, const TShape& ishape,
-                           int* axis, int* begin, int* end) {
+                           int* axis, index_t* begin, index_t* end) {
   *axis = param.axis;
   if (*axis < 0) {
     *axis += static_cast<int>(ishape.ndim());
@@ -1085,24 +1122,31 @@ inline void GetSliceAxisParams(const SliceAxisParam& param, const TShape& ishape
   CHECK(*axis < static_cast<int>(ishape.ndim()) && *axis >= 0) <<
     "Transformed axis must be smaller than the source ndim and larger than zero! Recieved axis=" <<
     param.axis << ", src_ndim=" << ishape.ndim() << ", transformed axis=" << *axis;
-  int axis_size = static_cast<int>(ishape[*axis]);
+  index_t axis_size = static_cast<index_t>(ishape[*axis]);
   *begin = param.begin;
   *end = -1;
   if (*begin < 0) {
     *begin += axis_size;
   }
-  if (!static_cast<bool>(param.end)) {
-    *end = axis_size;
-  } else {
-    *end = param.end.value();
-    if (*end < 0) {
-      *end += axis_size;
+  if (axis_size) {
+    if (!static_cast<bool>(param.end)) {
+      *end = axis_size;
+    } else {
+      *end = param.end.value();
+      if (*end < 0) {
+        *end += axis_size;
+      }
     }
+    CHECK(*end <= axis_size) << "Invalid end for end=" << *end << " as axis_size is " << axis_size;
+    CHECK((*begin < *end))
+      << "Invalid begin, end, get begin=" << param.begin << ", end=" << param.end;
+  } else {
+    *begin = 0;
+    *end = 0;
   }
-  CHECK((*end <= axis_size) && (*end >= 0))
+  CHECK(*end >= 0)
     << "Invalid begin, end, get begin=" << param.begin << ", end=" << param.end;
-  CHECK((*begin < *end) && (*begin >= 0))
-    << "Invalid begin, end, get begin=" << param.begin << ", end=" << param.end;
+  CHECK(*begin >= 0) << "Invalid begin for begin=" << param.begin;
 }
 
 inline bool SliceAxisShape(const nnvm::NodeAttrs& attrs,
@@ -1112,7 +1156,8 @@ inline bool SliceAxisShape(const nnvm::NodeAttrs& attrs,
   CHECK_EQ(in_attrs->size(), 1U);
   CHECK_EQ(out_attrs->size(), 1U);
   TShape& ishape = (*in_attrs)[0];
-  int axis, begin, end;
+  int axis;
+  index_t begin, end;
   GetSliceAxisParams(param, ishape, &axis, &begin, &end);
   TShape shape(ishape.ndim());
   for (index_t i = 0; i < ishape.ndim(); ++i) {
@@ -1136,7 +1181,8 @@ void SliceAxis(const nnvm::NodeAttrs& attrs,
   using namespace mshadow::expr;
   const SliceAxisParam& param = nnvm::get<SliceAxisParam>(attrs.parsed);
   mshadow::Stream<xpu> *s = ctx.get_stream<xpu>();
-  int axis, begin, end;
+  int axis;
+  index_t begin, end;
   GetSliceAxisParams(param, inputs[0].shape_, &axis, &begin, &end);
   int ndim = static_cast<int>(outputs[0].ndim());
 
@@ -1170,7 +1216,8 @@ void SliceAxisGrad_(const nnvm::NodeAttrs& attrs,
   using namespace mshadow::op;
   using namespace mshadow::expr;
   mshadow::Stream<xpu> *s = ctx.get_stream<xpu>();
-  int axis, begin, end;
+  int axis;
+  index_t begin, end;
   GetSliceAxisParams(param, outputs[0].shape_, &axis, &begin, &end);
   int ndim = static_cast<int>(outputs[0].shape_.ndim());
 
@@ -1317,7 +1364,7 @@ void SliceLikeForward(const nnvm::NodeAttrs& attrs,
   SliceLikeInferRanges(ishape, from_shape, param.axes, &param_begin, &param_end, &param_step);
 
   MXNET_NDIM_SWITCH(data.ndim(), ndim, {
-    common::StaticArray<int, ndim> begin, end, step;
+    common::StaticArray<index_t, ndim> begin, end, step;
     GetIndexRange(data.shape_, param_begin, param_end, param_step, &begin, &end, &step);
     MSHADOW_TYPE_SWITCH(out.type_flag_, DType, {
       MXNET_ASSIGN_REQ_SWITCH(req[0], Req, {
@@ -1342,13 +1389,15 @@ void SliceLikeBackward(const nnvm::NodeAttrs& attrs,
   CHECK_EQ(inputs.size(), 1U);
   CHECK_EQ(outputs.size(), 2U);
   CHECK_EQ(req.size(), 2U);
-  if (req[0] == kNullOp) return;
   using namespace mshadow;
   Stream<xpu>* s = ctx.get_stream<xpu>();
+  if (req[1] != kNullOp && req[1] != kAddTo) {
+    Fill(s, outputs[1], req[1], 0);  // Second input not relavant to gradients.
+  }
+  if (req[0] == kNullOp) return;
   const TBlob& ograd = inputs[0];
   const TBlob& igrad = outputs[0];
   const SliceLikeParam& param = nnvm::get<SliceLikeParam>(attrs.parsed);
-  Fill(s, outputs[1], req[1], 0);  // Second input not relavant to gradients.
   if (req[0] == kWriteTo) {
     Fill(s, igrad, req[0], 0);
   } else if (req[0] == kWriteInplace) {
@@ -1363,7 +1412,7 @@ void SliceLikeBackward(const nnvm::NodeAttrs& attrs,
   SliceLikeInferRanges(ishape, from_shape, param.axes, &param_begin, &param_end, &param_step);
 
   MXNET_NDIM_SWITCH(ograd.ndim(), ndim, {
-    common::StaticArray<int, ndim> begin, end, step;
+    common::StaticArray<index_t, ndim> begin, end, step;
     GetIndexRange(ograd.shape_, param_begin, param_end, param_step, &begin, &end, &step);
     MSHADOW_TYPE_SWITCH(ograd.type_flag_, DType, {
       MXNET_ASSIGN_REQ_SWITCH(req[0], Req, {
@@ -1392,7 +1441,7 @@ struct ClipParam : public dmlc::Parameter<ClipParam> {
 
 struct clip {
   template<typename DType>
-  MSHADOW_XINLINE static void Map(int i, DType* out, const DType* datas,
+  MSHADOW_XINLINE static void Map(index_t i, DType* out, const DType* datas,
                                   DType a_min, DType a_max) {
     DType data = datas[i];
     if (data > a_max) {
@@ -1408,7 +1457,7 @@ struct clip {
 
 struct clip_grad {
   template<typename DType>
-  MSHADOW_XINLINE static void Map(int i, DType* out, const DType* grad, const DType* datas,
+  MSHADOW_XINLINE static void Map(index_t i, DType* out, const DType* grad, const DType* datas,
                                   DType a_min, DType a_max) {
     DType data = datas[i];
     if (data > a_max) {
@@ -1897,7 +1946,7 @@ struct reverse {
   }
 #ifdef __CUDACC__
   template<typename DType>
-  __device__  static void Map(int index, index_t nreversedim, const DType *src, DType *dst,
+  __device__  static void Map(index_t index, index_t nreversedim, const DType *src, DType *dst,
                               const index_t * stride_,
                               const index_t * trailing_) {
     __shared__ index_t stride_share[REVERSE_MAX_DIM];
@@ -1912,7 +1961,7 @@ struct reverse {
   }
 #else
   template<typename DType>
-  MSHADOW_XINLINE  static void Map(int index, index_t nreversedim, const DType *src, DType *dst,
+  MSHADOW_XINLINE  static void Map(index_t index, index_t nreversedim, const DType *src, DType *dst,
                                    const index_t * stride_,
                                    const index_t * trailing_) {
     index_t new_idx = ReverseIndex(index, nreversedim, stride_, trailing_);
@@ -1940,11 +1989,11 @@ void ReverseOpForward(const nnvm::NodeAttrs& attrs,
   std::vector<index_t> stride_(param.axis.ndim());
   std::vector<index_t>  trailing_(param.axis.ndim());
   index_t reverse_index = 0;
-  for (auto axis_iter = param.axis.begin() ; axis_iter!= param.axis.end(); ++axis_iter) {
-    CHECK_LT(*axis_iter, static_cast<int>(ishape.ndim()));
-    stride_[reverse_index] = ishape[*axis_iter];
+  for (int axis : param.axis) {
+    CHECK_LT(axis, static_cast<int>(ishape.ndim()));
+    stride_[reverse_index] = ishape[axis];
     trailing_[reverse_index] = 1;
-    for (index_t i2 = *axis_iter + 1; i2 < ishape.ndim(); ++i2) {
+    for (index_t i2 = axis + 1; i2 < ishape.ndim(); ++i2) {
       trailing_[reverse_index] *= ishape[i2];
     }
     reverse_index++;
@@ -2048,7 +2097,7 @@ void StackOpForward(const nnvm::NodeAttrs& attrs,
     Shape<3> oshape = Shape3(leading, mid, trailing);
     out = outputs[0].get_with_shape<xpu, 3, DType>(oshape, s);
 
-    for (index_t i = 0; i < inputs.size(); ++i) {
+    for (size_t i = 0; i < inputs.size(); ++i) {
       Shape<3> dshape = Shape3(leading, 1, trailing);
       data[i] = inputs[i].get_with_shape<xpu, 3, DType>(dshape, s);
     }
@@ -2082,7 +2131,7 @@ void StackOpBackward(const nnvm::NodeAttrs& attrs,
     Shape<3> oshape = Shape3(leading, mid, trailing);
     grad = inputs[0].get_with_shape<xpu, 3, DType>(oshape, s);
 
-    for (index_t i = 0; i < outputs.size(); ++i) {
+    for (size_t i = 0; i < outputs.size(); ++i) {
       Shape<3> dshape = Shape3(leading, 1, trailing);
       grad_in[i] = outputs[i].get_with_shape<xpu, 3, DType>(dshape, s);
     }
@@ -2104,10 +2153,10 @@ struct SqueezeParam : public dmlc::Parameter<SqueezeParam> {
 // move all the zeros to the last of the shape array
 // and keep the relative order of the non-zero values.
 // Returns the new shape size after moving all zeros to the end.
-inline uint32_t SqueezeShapeHelper(TShape* shape) {
+inline size_t SqueezeShapeHelper(TShape* shape) {
   CHECK(shape != nullptr);
-  uint32_t count = 0;
-  for (uint32_t i = 0; i < shape->ndim(); ++i) {
+  size_t count = 0;
+  for (size_t i = 0; i < shape->ndim(); ++i) {
     if ((*shape)[i] == 0) {
       ++count;
     } else {
@@ -2130,7 +2179,7 @@ inline bool SqueezeShape(const nnvm::NodeAttrs& attrs,
   if (param.axis.has_value()) {
     // preprocess axis
     TShape axes = param.axis.value();
-    for (uint32_t i = 0; i < axes.ndim(); ++i) {
+    for (size_t i = 0; i < axes.ndim(); ++i) {
       if (axes[i] < 0) {
         axes[i] += dndim;
         CHECK_GE(axes[i], 0)
@@ -2145,17 +2194,652 @@ inline bool SqueezeShape(const nnvm::NodeAttrs& attrs,
       oshape[axes[i]] = 0;
     }
   } else {
-    for (uint32_t i = 0; i < oshape.ndim(); ++i) {
+    for (size_t i = 0; i < oshape.ndim(); ++i) {
       if (oshape[i] == 1) oshape[i] = 0;
     }
   }
-  uint32_t oshape_size = SqueezeShapeHelper(&oshape);
+  size_t oshape_size = SqueezeShapeHelper(&oshape);
   if (oshape_size == 0) {  // corner case when dshape is (1, 1, 1, 1)
     oshape[0] = 1;
     oshape_size = 1;
   }
   SHAPE_ASSIGN_CHECK(*out_attrs, 0, TShape(oshape.data(), oshape.data()+oshape_size));
   return true;
+}
+
+struct DepthToSpaceParam : public dmlc::Parameter<DepthToSpaceParam> {
+  int block_size;
+  DMLC_DECLARE_PARAMETER(DepthToSpaceParam) {
+    DMLC_DECLARE_FIELD(block_size)
+      .describe("Blocks of [block_size. block_size] are moved");
+  }
+};
+
+inline bool DepthToSpaceOpShape(const nnvm::NodeAttrs& attrs,
+                                std::vector<TShape>* in_attrs,
+                                std::vector<TShape>* out_attrs) {
+  const DepthToSpaceParam& param = nnvm::get<DepthToSpaceParam>(attrs.parsed);
+  CHECK_EQ(in_attrs->size(), 1U);
+  CHECK_EQ(out_attrs->size(), 1U);
+  CHECK_EQ(in_attrs->at(0).ndim(), 4) << "Operation Depth To Space requires exactly 4D tensor";
+
+  TShape expected_out(4);
+
+  TShape& in_shape = in_attrs->at(0);
+  int block = param.block_size;
+  CHECK_NE(block, 0) << "block_size must be a positive integer value";
+  CHECK_NE(in_shape[1], 0) << "Depth dimension:1 cannot be 0";
+  CHECK_EQ(in_shape[1] % (block * block), 0)
+    << "Cannot perform Depth To Space operation on the specified tensor."
+       " Dimension:1(depth dimension) should be a multiple of 'block^2'";
+  CHECK_NE(in_shape[0], 0)
+    << "Operation requires a 4D tensor. Size of dimension:0 cannot be 0";
+  CHECK_NE(in_shape[2], 0)
+    << "Operation requires a 4D tensor. Size of dimension:2 cannot be 0";
+  CHECK_NE(in_shape[3], 0)
+    << "Operation requires a 4D tensor. Size of dimension:3 cannot be 0";
+
+  expected_out[0] = in_shape[0];
+  expected_out[1] = in_shape[1] / (block * block);
+  size_t i = 2;
+  while (i < expected_out.ndim()) {
+    expected_out[i] = in_shape[i] * block;
+    ++i;
+  }
+
+  SHAPE_ASSIGN_CHECK(*out_attrs, 0, expected_out);
+  return true;
+}
+
+inline bool DepthToSpaceOpType(const nnvm::NodeAttrs& attrs,
+                               std::vector<int>* in_attrs,
+                               std::vector<int>* out_attrs) {
+  CHECK_EQ(in_attrs->size(), 1U);
+  CHECK_EQ(out_attrs->size(), 1U);
+
+  TYPE_ASSIGN_CHECK(*out_attrs, 0, in_attrs->at(0));
+  TYPE_ASSIGN_CHECK(*in_attrs, 0, out_attrs->at(0));
+  return out_attrs->at(0) != -1;
+}
+
+/*!
+ * \brief This function updates the value of input index from where the data element
+ * needs to be fetched and written out to the ith location in output tensor
+ * \param index_position    index within offset array to get offset of given dimension
+ * \param dim_size          size of current dimension
+ * \param idx               output tensor index
+ * \param inp_index         index within input tensor from where value is retrieved
+ * \param offset_arr        array containing the linear offset of input tensor
+ */
+MSHADOW_XINLINE void update_index(index_t index_position, index_t dim_size, index_t *idx,
+                                  index_t *inp_index, const index_t* offset_arr) {
+  index_t next_idx_val = *idx / dim_size;
+  *inp_index += (*idx - next_idx_val * dim_size) * offset_arr[index_position];
+  *idx = next_idx_val;
+}
+
+/*!
+ * \brief This function performs the tensor transpose (0, 1, 2, 3, 4, 5) ->
+ * (0, 3, 4, 1, 5, 2) by computing linear index within input tensor to be mapped
+ * to the ith index of output tensor
+ * \param i           tensor index
+ * \param out_data    output tensor
+ * \param in_data     input tensor
+ * \param block       size of chunks to be moved out of depth dimension
+ * \param size        array containing the size of each dimension of input tensor
+ * \param offset_arr  array containing the linear offset of input tensor
+ */
+template<int req>
+struct depth_to_space_forward {
+  template<typename DType>
+  MSHADOW_XINLINE static void Map(index_t i, DType* out_data, const DType* in_data,
+                                  const int block, const index_t* size, const index_t* offset_arr) {
+    index_t inp_index = 0, idx = i, dim_size;
+    dim_size = block;
+    update_index(2, dim_size, &idx, &inp_index, offset_arr);
+    dim_size = size[3];
+    update_index(5, dim_size, &idx, &inp_index, offset_arr);
+    dim_size = block;
+    update_index(1, dim_size, &idx, &inp_index, offset_arr);
+    dim_size = size[2];
+    update_index(4, dim_size, &idx, &inp_index, offset_arr);
+    dim_size = size[1] / (block * block);
+    update_index(3, dim_size, &idx, &inp_index, offset_arr);
+    dim_size = size[0];
+    update_index(0, dim_size, &idx, &inp_index, offset_arr);
+    KERNEL_ASSIGN(out_data[i], req, in_data[inp_index]);
+  }
+};
+
+/*!
+ * \brief This function calculates the linear offset for each dimension of
+ * input tensor and stores them in an array, which is later used in
+ * performing depth_to_space operation
+ * \param i           global thread id
+ * \param offset_arr  array to be populated with offset values
+ * \param size        array to be populated with size of each dimension of input tensor
+ * \param block       size of chunks to be moved out of depth dimension
+ * \param size0       size of Dim 0 of input tensor
+ * \param size1       size of Dim 1 of input tensor
+ * \param size2       size of Dim 2 of input tensor
+ * \param size3       size of Dim 3 of input tensor
+ */
+template<int req>
+struct compute_offset_for_depth_to_space {
+  template<typename DType>
+  MSHADOW_XINLINE static void Map(index_t i, DType* offset_arr, DType* size, const int block,
+                                  const index_t size0, const index_t size1, const index_t size2,
+                                  const index_t size3) {
+    size[0] = size0;
+    size[1] = size1;
+    size[2] = size2;
+    size[3] = size3;
+
+    offset_arr[5] = 1;
+    offset_arr[4] = offset_arr[5] * size[3];
+    offset_arr[3] = offset_arr[4] * size[2];
+    offset_arr[2] = offset_arr[3] * size[1] / (block * block);
+    offset_arr[1] = offset_arr[2] * block;
+    offset_arr[0] = offset_arr[1] * block;
+  }
+};
+
+template<typename xpu>
+void DepthToSpaceOpForward(const nnvm::NodeAttrs& attrs,
+                           const OpContext& ctx,
+                           const std::vector<TBlob>& inputs,
+                           const std::vector<OpReqType>& req,
+                           const std::vector<TBlob>& outputs) {
+  CHECK_EQ(inputs.size(), 1U);
+  CHECK_EQ(outputs.size(), 1U);
+  CHECK_EQ(req.size(), 1U);
+  mshadow::Stream<xpu> *s = ctx.get_stream<xpu>();
+  const TBlob& in_data = inputs[0];
+  const TBlob& out_data = outputs[0];
+  const DepthToSpaceParam& param = nnvm::get<DepthToSpaceParam>(attrs.parsed);
+  using namespace mxnet_op;
+  int block = param.block_size;
+
+  mshadow::Tensor<xpu, 1, char> workspace =
+    ctx.requested[0].get_space_typed<xpu, 1, char>(mshadow::Shape1(sizeof(index_t) * 10), s);
+  char* workspace_curr_ptr = workspace.dptr_;
+  index_t* offset_arr = reinterpret_cast<index_t*>(workspace_curr_ptr);
+  index_t* size = reinterpret_cast<index_t*>(workspace_curr_ptr + sizeof(index_t) * 6);
+
+  MSHADOW_TYPE_SWITCH(out_data.type_flag_, DType, {
+    MXNET_ASSIGN_REQ_SWITCH(req[0], req_type, {
+      Kernel<compute_offset_for_depth_to_space<req_type>, xpu>::Launch(
+          s, 1, offset_arr, size, block, in_data.shape_[0], in_data.shape_[1],
+          in_data.shape_[2], in_data.shape_[3]);
+
+      Kernel<depth_to_space_forward<req_type>, xpu>::Launch(
+          s, out_data.Size(), out_data.dptr<DType>(), in_data.dptr<DType>(),
+          block, size, offset_arr);
+    });
+  });
+}
+
+inline bool SpaceToDepthOpShape(const nnvm::NodeAttrs& attrs,
+                                std::vector<TShape>* in_attrs,
+                                std::vector<TShape>* out_attrs) {
+  const DepthToSpaceParam& param = nnvm::get<DepthToSpaceParam>(attrs.parsed);
+  CHECK_EQ(in_attrs->size(), 1U);
+  CHECK_EQ(out_attrs->size(), 1U);
+  CHECK_EQ(in_attrs->at(0).ndim(), 4) << "Operation Space To Depth requires exactly 4D tensor";
+
+  TShape expected_out(in_attrs->at(0).ndim());
+
+  TShape& in_shape = in_attrs->at(0);
+  int block = param.block_size;
+  CHECK_NE(block, 0) << "block_size must be a positive integer value";
+  CHECK_NE(in_shape[0], 0)
+    << "Operation requires a 4D tensor. Size of dimension:0 cannot be 0";
+  CHECK_NE(in_shape[1], 0) << "Depth dimension:1 cannot be 0";
+  CHECK_NE(in_shape[2], 0)
+    << "Operation requires a 4D tensor. Size of dimension:2 cannot be 0";
+  CHECK_EQ(in_shape[2] % block, 0)
+    << "Cannot perform Depth To Space operation on the specified tensor."
+       " Dimension:2(1st Space dimension) should be a multiple of 'block' ";
+  CHECK_NE(in_shape[3], 0)
+    << "Operation requires a 4D tensor. Size of dimension:3 cannot be 0";
+  CHECK_EQ(in_shape[3] % block, 0)
+    << "Cannot perform Depth To Space operation on the specified tensor."
+       " Dimension:3(2nd space dimension) should be a multiple of 'block' ";
+
+  expected_out[0] = in_shape[0];
+  expected_out[1] = in_shape[1] * block * block;
+  uint32_t i = 2;
+  while (i < expected_out.ndim()) {
+    expected_out[i] = in_shape[i] / block;
+    ++i;
+  }
+
+  SHAPE_ASSIGN_CHECK(*out_attrs, 0, expected_out);
+  return true;
+}
+
+inline bool SpaceToDepthOpType(const nnvm::NodeAttrs& attrs,
+                               std::vector<int>* in_attrs,
+                               std::vector<int>* out_attrs) {
+  CHECK_EQ(in_attrs->size(), 1U);
+  CHECK_EQ(out_attrs->size(), 1U);
+
+  TYPE_ASSIGN_CHECK(*out_attrs, 0, in_attrs->at(0));
+  TYPE_ASSIGN_CHECK(*in_attrs, 0, out_attrs->at(0));
+  return out_attrs->at(0) != -1;
+}
+
+/*!
+ * \brief This function preforms the tensor transpose (0, 1, 2, 3, 4, 5) ->
+ * (0, 3, 5, 1, 2, 4) by computing linear index within input tensor to be mapped
+ * to the ith index of output tensor
+ * \param i           tensor index
+ * \param out_data    output tensor
+ * \param in_data     input tensor
+ * \param block       size of chunks to be moved out of depth dimension
+ * \param size        array containing the size of each dimension of input tensor
+ * \param offset_arr  array containing the linear offset of input tensor
+ */
+template<int req>
+struct space_to_depth_forward {
+  template<typename DType>
+  MSHADOW_XINLINE static void Map(index_t i, DType* out_data, const DType* in_data, const int block,
+                                  const index_t* size, const index_t* offset_arr) {
+    index_t inp_index = 0, idx = i, dim_size;
+    dim_size = size[3] / block;
+    update_index(4, dim_size, &idx, &inp_index, offset_arr);
+    dim_size = size[2] / block;
+    update_index(2, dim_size, &idx, &inp_index, offset_arr);
+    dim_size = size[1];
+    update_index(1, dim_size, &idx, &inp_index, offset_arr);
+    dim_size = block;
+    update_index(5, dim_size, &idx, &inp_index, offset_arr);
+    dim_size = block;
+    update_index(3, dim_size, &idx, &inp_index, offset_arr);
+    dim_size = size[0];
+    update_index(0, dim_size, &idx, &inp_index, offset_arr);
+    KERNEL_ASSIGN(out_data[i], req, in_data[inp_index]);
+  }
+};
+
+/*!
+ * \brief This function calculates the linear offset for each dimension of
+ * input tensor and stores them in an array, which is later used in
+ * performing space_to_depth operation
+ * \param i           global thread id
+ * \param offset_arr  array to be populated with offset values
+ * \param size        array to be populated with size of each dimension of input tensor
+ * \param block       size of chunks to be moved out of depth dimension
+ * \param size0       size of Dim 0 of input tensor
+ * \param size1       size of Dim 1 of input tensor
+ * \param size2       size of Dim 2 of input tensor
+ * \param size3       size of Dim 3 of input tensor
+ */
+template<int req>
+struct compute_offset_for_space_to_depth {
+  template<typename DType>
+  MSHADOW_XINLINE static void Map(index_t i, DType* offset_arr, DType* size, const int block,
+                                  const index_t size0, const index_t size1,
+                                  const index_t size2, const index_t size3) {
+    size[0] = size0;
+    size[1] = size1;
+    size[2] = size2;
+    size[3] = size3;
+
+    offset_arr[5] = 1;
+    offset_arr[4] = offset_arr[5] * block;
+    offset_arr[3] = offset_arr[4] * size[3] / block;
+    offset_arr[2] = offset_arr[3] * block;
+    offset_arr[1] = offset_arr[2] * size[2] / block;
+    offset_arr[0] = offset_arr[1] * size[1];
+  }
+};
+
+template<typename xpu>
+void SpaceToDepthOpForward(const nnvm::NodeAttrs& attrs,
+                           const OpContext& ctx,
+                           const std::vector<TBlob>& inputs,
+                           const std::vector<OpReqType>& req,
+                           const std::vector<TBlob>& outputs) {
+  CHECK_EQ(inputs.size(), 1U);
+  CHECK_EQ(outputs.size(), 1U);
+  CHECK_EQ(req.size(), 1U);
+  mshadow::Stream<xpu> *s = ctx.get_stream<xpu>();
+  const TBlob& in_data = inputs[0];
+  const TBlob& out_data = outputs[0];
+  const DepthToSpaceParam& param = nnvm::get<DepthToSpaceParam>(attrs.parsed);
+  using namespace mxnet_op;
+  int block = param.block_size;
+
+  mshadow::Tensor<xpu, 1, char> workspace =
+    ctx.requested[0].get_space_typed<xpu, 1, char>(mshadow::Shape1(sizeof(index_t) * 10), s);
+  char* workspace_curr_ptr = workspace.dptr_;
+  index_t* offset_arr = reinterpret_cast<index_t*>(workspace_curr_ptr);
+  index_t* size = reinterpret_cast<index_t*>(workspace_curr_ptr + sizeof(index_t) * 6);
+
+  MSHADOW_TYPE_SWITCH(out_data.type_flag_, DType, {
+    MXNET_ASSIGN_REQ_SWITCH(req[0], req_type, {
+      Kernel<compute_offset_for_space_to_depth<req_type>, xpu>::Launch(
+          s, 1, offset_arr, size, block, in_data.shape_[0], in_data.shape_[1],
+          in_data.shape_[2], in_data.shape_[3]);
+      Kernel<space_to_depth_forward<req_type>, xpu>::Launch(
+          s, out_data.Size(), out_data.dptr<DType>(), in_data.dptr<DType>(),
+          block, size, offset_arr);
+    });
+  });
+}
+
+namespace split_enum {
+enum SplitOpInputs {kData};
+}  // namespace split_enum
+
+struct SplitParam : public dmlc::Parameter<SplitParam> {
+  TShape indices;
+  int axis;
+  bool squeeze_axis;
+  int sections;
+  DMLC_DECLARE_PARAMETER(SplitParam) {
+    DMLC_DECLARE_FIELD(indices)
+    .describe("Indices of splits. The elements should denote the boundaries of at which split"
+              " is performed along the `axis`.");
+    DMLC_DECLARE_FIELD(axis).set_default(1)
+    .describe("Axis along which to split.");
+    DMLC_DECLARE_FIELD(squeeze_axis).set_default(0)
+    .describe("If true, Removes the axis with length 1 from the shapes of the output arrays."
+              " **Note** that setting `squeeze_axis` to ``true`` removes axis with length 1"
+              " only along the `axis` which it is split."
+              " Also `squeeze_axis` can be set to ``true``"
+              " only if ``input.shape[axis] == num_outputs``.");
+    DMLC_DECLARE_FIELD(sections).set_default(0)
+    .describe("Number of sections if equally splitted. Default to 0 which means split by indices.");
+  }
+};  // struct SplitParam
+
+inline TShape GetSplitIndices(const TShape& ishape, int axis, int sections) {
+  TShape indices(sections+1);
+  indices[0] = 0;
+  int64_t section_size = ishape[axis] / sections;
+  for (int i = 0; i < sections; ++i) {
+    indices[i+1] = section_size * (i + 1);
+  }
+  return indices;
+}
+
+inline bool SplitOpType(const nnvm::NodeAttrs& attrs,
+                        std::vector<int>* in_attrs,
+                        std::vector<int>* out_attrs) {
+  CHECK_EQ(in_attrs->size(), 1U);
+  int dtype = (*in_attrs)[0];
+  CHECK_NE(dtype, -1) << "First input must have specified type";
+  const SplitParam& param = nnvm::get<SplitParam>(attrs.parsed);
+  out_attrs->clear();
+  int num_outputs = (param.sections > 0) ? param.sections : param.indices.ndim();
+  for (int i = 0; i < num_outputs; ++i) {
+    out_attrs->push_back(dtype);
+  }
+  return true;
+}
+
+inline bool SplitOpShape(const nnvm::NodeAttrs& attrs,
+                         std::vector<TShape>* in_attrs,
+                         std::vector<TShape>* out_attrs) {
+  using namespace mshadow;
+  const SplitParam& param = nnvm::get<SplitParam>(attrs.parsed);
+  CHECK_EQ(in_attrs->size(), 1U);
+  TShape dshape = in_attrs->at(split_enum::kData);
+  TShape ishape = in_attrs->at(split_enum::kData);
+  if (dshape.ndim() == 0) return false;
+  if (param.axis >= 0) {
+    CHECK_LT(static_cast<size_t>(param.axis), dshape.ndim());
+  } else {
+    CHECK_LT(param.axis + dshape.ndim(), dshape.ndim());
+  }
+  int real_axis = param.axis;
+  if (real_axis < 0) {
+    real_axis += dshape.ndim();
+  }
+  const TShape indices =
+    (param.sections > 0) ? GetSplitIndices(ishape, real_axis, param.sections) : param.indices;
+  int num_outputs = (param.sections > 0) ? indices.ndim() - 1 : indices.ndim();
+  // Pre-compute squeezed output shape for future usage
+  TShape squeezed_dshape = dshape;
+  for (int d = real_axis; d < static_cast<int>(squeezed_dshape.ndim()) - 1; ++d) {
+    squeezed_dshape[d] = squeezed_dshape[d+1];
+  }
+  squeezed_dshape = TShape(&squeezed_dshape[0], &squeezed_dshape[squeezed_dshape.ndim()-1]);
+  // Assign shape to every output
+  for (int i = 0; i < num_outputs; ++i) {
+    int start = indices[i];
+    int end = (i < num_outputs - 1) ? indices[i + 1] : ishape[real_axis];
+    CHECK(start < end)
+      << "start " << start << " is not less than end " << end << "for subarray " << i;
+    CHECK(end <= ishape[real_axis])
+      << "end " << end << " is no less than the size of the axis " << ishape[real_axis];
+    dshape[real_axis] = (end - start);
+    if (param.squeeze_axis) {
+      CHECK_EQ(end - start, 1U) << "expected axis size of 1 but got " << end - start;
+      SHAPE_ASSIGN_CHECK(*out_attrs, i, squeezed_dshape);
+    } else {
+      SHAPE_ASSIGN_CHECK(*out_attrs, i, dshape);
+    }
+  }
+  TShape back_calculate_dshape = ishape;
+  back_calculate_dshape[real_axis] = 0;
+  for (int d = 0; d < real_axis; ++d) {
+    back_calculate_dshape[d] = (*out_attrs)[0][d];
+  }
+  if (param.squeeze_axis) {
+    back_calculate_dshape[real_axis] = num_outputs;
+  } else {
+    for (int i = 0; i < num_outputs; ++i) {
+      back_calculate_dshape[real_axis] += (*out_attrs)[i][real_axis];
+    }
+  }
+  for (int d = real_axis + 1; d < static_cast<int>(ishape.ndim()); ++d) {
+    if (param.squeeze_axis) {
+      back_calculate_dshape[d] = (*out_attrs)[0][d - 1];
+    } else {
+      back_calculate_dshape[d] = (*out_attrs)[0][d];
+    }
+  }
+  SHAPE_ASSIGN_CHECK(*in_attrs, split_enum::kData, back_calculate_dshape);
+  return true;
+}
+
+struct SplitKernel {
+  /*!
+   * \brief Map function for forward split_v2 operator
+   * \param i              global thread id
+   * \param in_data        ptr to input buffer
+   * \param out_data       ptr to ptr of outputs buffer
+   * \param indices        ptr to indices buffer
+   * \param num_sections   # of sections after split
+   * \param axis_size      size of axis to be splitted on
+   * \param trailing_size  step size within the data buffer of the axis to be splitted on
+   */
+  template<typename DType>
+  static MSHADOW_XINLINE void Map(size_t i,
+                                  const DType *in_data, DType** out_data, const size_t* indices,
+                                  const size_t num_sections, const size_t axis_size,
+                                  const size_t trailing_size) {
+    size_t idx = i / trailing_size % axis_size;
+    size_t target = 0;
+    for (size_t section = 0;
+         section < num_sections && indices[section] <= idx;
+         target = section++) {}
+    DType* target_data = out_data[target];
+    const size_t mid_idx = idx - indices[target];
+    const size_t head_idx = i / (trailing_size * axis_size);
+    const size_t tail_idx = i % trailing_size;
+    const size_t section_size = indices[target + 1] - indices[target];
+    const size_t target_idx =
+      head_idx * trailing_size * section_size + mid_idx * trailing_size + tail_idx;
+    target_data[target_idx] = in_data[i];
+  }
+};
+
+struct ConcatenateKernel {
+  /*!
+   * \brief Map function for backward split_v2 operator
+   * \param i              global thread id
+   * \param out_grad       ptr to ptr of out grads buffer
+   * \param in_grad        ptr to input grad buffer
+   * \param indices        ptr to indices buffer
+   * \param num_sections   # of sections after split
+   * \param axis_size      size of axis to be splitted on
+   * \param trailing_size  step size within the data buffer of the axis to be splitted on
+   */
+  template<typename DType>
+  static MSHADOW_XINLINE void Map(size_t i,
+                                  DType** out_grad, DType* in_grad, const size_t* indices,
+                                  const size_t num_sections, const size_t axis_size,
+                                  const size_t trailing_size) {
+    size_t idx = i / trailing_size % axis_size;
+    size_t src = 0;
+    for (size_t section = 0;
+         section < num_sections && indices[section] <= idx;
+         src = section++) {}
+    DType* src_grad = out_grad[src];
+    const size_t mid_idx = idx - indices[src];
+    const size_t head_idx = i / (trailing_size * axis_size);
+    const size_t tail_idx = i % trailing_size;
+    const size_t section_size = indices[src + 1] - indices[src];
+    const size_t src_idx =
+      head_idx * trailing_size * section_size + mid_idx * trailing_size + tail_idx;
+    in_grad[i] = src_grad[src_idx];
+  }
+};
+
+template<typename xpu>
+inline void SplitOpForward(const nnvm::NodeAttrs& attrs,
+                           const OpContext& ctx,
+                           const std::vector<TBlob>& inputs,
+                           const std::vector<OpReqType>& req,
+                           const std::vector<TBlob>& outputs) {
+  using namespace mshadow;
+  using namespace mshadow::expr;
+  using namespace mxnet_op;
+  const SplitParam& param = nnvm::get<SplitParam>(attrs.parsed);
+  CHECK_EQ(inputs.size(), 1U);
+  CHECK_EQ(outputs.size(), (param.sections > 0) ? param.sections : param.indices.ndim());
+  Stream<xpu> *s = ctx.get_stream<xpu>();
+  const TBlob& input_data = inputs[split_enum::kData];
+  size_t leading = 1, trailing = 1;
+  int real_axis = param.axis;
+  if (real_axis < 0) {
+    real_axis += input_data.ndim();
+  }
+  CHECK_LT(real_axis, input_data.ndim());
+  size_t mid = input_data.shape_[real_axis];
+  for (int i = 0; i < real_axis; ++i) {
+    leading *= input_data.shape_[i];
+  }
+  for (int i = real_axis + 1; i < input_data.ndim(); ++i) {
+    trailing *= input_data.shape_[i];
+  }
+
+  size_t workspace_size = 0;
+  const TShape& ishape = input_data.shape_;
+  const TShape split_pts =
+    (param.sections > 0) ? GetSplitIndices(ishape, real_axis, param.sections) : param.indices;
+  std::vector<size_t> indices;
+  for (const auto& section : split_pts) {
+    indices.push_back(section);
+  }
+  if (param.sections == 0) {
+    indices.push_back(ishape[real_axis]);
+  }
+  workspace_size += indices.size() * sizeof(size_t);
+  MSHADOW_TYPE_SWITCH(input_data.type_flag_, DType, {
+    std::vector<DType*> output_data;
+    for (const TBlob& data : outputs) {
+      output_data.push_back(data.dptr<DType>());
+    }
+    workspace_size += output_data.size() * sizeof(DType*);
+    Tensor<xpu, 1, char> workspace =
+      ctx.requested[0].get_space_typed<xpu, 1, char>(Shape1(workspace_size), s);
+    Tensor<cpu, 1, size_t> indices_cpu_tensor(indices.data(), Shape1(indices.size()));
+    Tensor<xpu, 1, size_t> indices_xpu_tensor(
+      reinterpret_cast<size_t*>(workspace.dptr_), Shape1(indices.size()));
+    Tensor<cpu, 1, DType*> ptrs_cpu_tensor(output_data.data(), Shape1(output_data.size()));
+    Tensor<xpu, 1, DType*> ptrs_xpu_tensor(
+      reinterpret_cast<DType**>(workspace.dptr_ + indices.size() * sizeof(size_t)),
+      Shape1(output_data.size()));
+    mshadow::Copy(indices_xpu_tensor, indices_cpu_tensor, s);
+    mshadow::Copy(ptrs_xpu_tensor, ptrs_cpu_tensor, s);
+    Kernel<SplitKernel, xpu>::Launch(
+      s, input_data.Size(), input_data.dptr<DType>(), ptrs_xpu_tensor.dptr_,
+      indices_xpu_tensor.dptr_, indices.size() - 1, mid, trailing);
+  });
+}
+
+template<typename xpu>
+inline void SplitOpBackward(const nnvm::NodeAttrs& attrs,
+                            const OpContext& ctx,
+                            const std::vector<TBlob>& inputs,
+                            const std::vector<OpReqType>& req,
+                            const std::vector<TBlob>& outputs) {
+  using namespace mshadow;
+  using namespace mshadow::expr;
+  using namespace mxnet_op;
+  const SplitParam& param = nnvm::get<SplitParam>(attrs.parsed);
+  CHECK_EQ(inputs.size(), (param.sections > 0) ? param.sections : param.indices.ndim())
+    << "out grad vector size mush match the output size";
+  CHECK_EQ(outputs.size(), 1U);
+  Stream<xpu> *s = ctx.get_stream<xpu>();
+  TBlob input_grad = outputs[split_enum::kData];
+  size_t leading = 1, trailing = 1;
+  int real_axis = param.axis;
+  if (real_axis < 0) {
+      real_axis += input_grad.ndim();
+  }
+  CHECK_LT(real_axis, input_grad.ndim());
+  size_t mid = input_grad.shape_[real_axis];
+  for (int i = 0; i < real_axis; ++i) {
+    leading *= input_grad.shape_[i];
+  }
+  for (int i = real_axis + 1; i < input_grad.ndim(); ++i) {
+    trailing *= input_grad.shape_[i];
+  }
+
+  size_t workspace_size = 0;
+  const TShape& ishape = input_grad.shape_;
+  const TShape split_pts =
+    (param.sections > 0) ? GetSplitIndices(ishape, real_axis, param.sections) : param.indices;
+  std::vector<size_t> indices;
+  for (const auto& section : split_pts) {
+    indices.push_back(section);
+  }
+  if (param.sections == 0) {
+    indices.push_back(ishape[real_axis]);
+  }
+  workspace_size += indices.size() * sizeof(size_t);
+  MSHADOW_TYPE_SWITCH(input_grad.type_flag_, DType, {
+    std::vector<DType*> out_grads;
+    for (const TBlob& output_grad : inputs) {
+      out_grads.push_back(output_grad.dptr<DType>());
+    }
+    workspace_size += out_grads.size() * sizeof(DType*);
+    Tensor<xpu, 1, char> workspace =
+      ctx.requested[0].get_space_typed<xpu, 1, char>(Shape1(workspace_size), s);
+    Tensor<cpu, 1, size_t> indices_cpu_tensor(indices.data(), Shape1(indices.size()));
+    Tensor<xpu, 1, size_t> indices_xpu_tensor(
+      reinterpret_cast<size_t*>(workspace.dptr_), Shape1(indices.size()));
+    Tensor<cpu, 1, DType*> ptrs_cpu_tensor(out_grads.data(), Shape1(inputs.size()));
+    Tensor<xpu, 1, DType*> ptrs_xpu_tensor(
+      reinterpret_cast<DType**>(workspace.dptr_ + indices.size() * sizeof(size_t)),
+      Shape1(inputs.size()));
+    mshadow::Copy(indices_xpu_tensor, indices_cpu_tensor, s);
+    mshadow::Copy(ptrs_xpu_tensor, ptrs_cpu_tensor, s);
+    Kernel<ConcatenateKernel, xpu>::Launch(
+      s, input_grad.Size(), ptrs_xpu_tensor.dptr_, input_grad.dptr<DType>(),
+      indices_xpu_tensor.dptr_, indices.size() - 1, mid, trailing);
+  });
+}
+
+inline uint32_t SplitNumOutputs(const NodeAttrs& attrs) {
+  const SplitParam& param = nnvm::get<SplitParam>(attrs.parsed);
+  return (param.sections > 0) ? param.sections : param.indices.ndim();
 }
 
 }  // namespace op

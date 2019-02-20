@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # Symbol API
 
 ```eval_rst
@@ -182,6 +199,7 @@ Composite multiple symbols into a new one by an operator.
 
     Symbol.zeros_like
     Symbol.ones_like
+    Symbol.diag
 ```
 
 ### Changing shape and type
@@ -191,6 +209,8 @@ Composite multiple symbols into a new one by an operator.
     :nosignatures:
 
     Symbol.astype
+    Symbol.shape_array
+    Symbol.size_array
     Symbol.reshape
     Symbol.reshape_like
     Symbol.flatten
@@ -205,6 +225,7 @@ Composite multiple symbols into a new one by an operator.
 
     Symbol.broadcast_to
     Symbol.broadcast_axes
+    Symbol.broadcast_like
     Symbol.tile
     Symbol.pad
 ```
@@ -218,6 +239,8 @@ Composite multiple symbols into a new one by an operator.
     Symbol.transpose
     Symbol.swapaxes
     Symbol.flip
+    Symbol.depth_to_space
+    Symbol.space_to_depth
 ```
 
 ### Reduce functions
@@ -291,8 +314,8 @@ Composite multiple symbols into a new one by an operator.
     Symbol.take
     Symbol.one_hot
     Symbol.pick
-    Symbol.ravel_multi_index
-    Symbol.unravel_index
+    ravel_multi_index
+    unravel_index
 ```
 
 ### Get internal and output symbol
@@ -373,10 +396,13 @@ Composite multiple symbols into a new one by an operator.
     :nosignatures:
 
     cast
+    shape_array
+    size_array
     reshape
     reshape_like
     flatten
     expand_dims
+    diag
 ```
 
 ### Expanding elements
@@ -387,6 +413,7 @@ Composite multiple symbols into a new one by an operator.
 
     broadcast_to
     broadcast_axes
+    broadcast_like
     repeat
     tile
     pad
@@ -401,6 +428,8 @@ Composite multiple symbols into a new one by an operator.
     transpose
     swapaxes
     flip
+    depth_to_space
+    space_to_depth
 ```
 
 ### Joining and splitting symbols
@@ -565,7 +594,7 @@ Composite multiple symbols into a new one by an operator.
     broadcast_logical_and
     broadcast_logical_or
     broadcast_logical_xor
-    broadcast_logical_not
+    logical_not
 ```
 
 ### Random sampling
@@ -574,15 +603,16 @@ Composite multiple symbols into a new one by an operator.
 .. autosummary::
     :nosignatures:
 
-    mxnet.symbol.random.uniform
-    mxnet.symbol.random.normal
-    mxnet.symbol.random.gamma
-    mxnet.symbol.random.exponential
-    mxnet.symbol.random.poisson
-    mxnet.symbol.random.negative_binomial
-    mxnet.symbol.random.generalized_negative_binomial
-    mxnet.symbol.random.multinomial
-    mxnet.symbol.random.shuffle
+    random.exponential
+    random.gamma
+    random.generalized_negative_binomial
+    random.multinomial
+    random.negative_binomial
+    random.normal
+    random.poisson
+    random.randint
+    random.shuffle
+    random.uniform
     mxnet.random.seed
 ```
 
@@ -645,6 +675,8 @@ Composite multiple symbols into a new one by an operator.
     log_softmax
     relu
     sigmoid
+    erf
+    erfinv
 ```
 
 ### More

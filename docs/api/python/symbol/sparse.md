@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # Sparse Symbol API
 
 ```eval_rst
@@ -16,7 +33,7 @@ This document lists the routines of the sparse symbolic expression package:
 ```
 
 The `Sparse Symbol` API, defined in the `symbol.sparse` package, provides
-sparse neural network graphs and auto-differentiation on CPU.
+sparse neural network graphs and auto-differentiation.
 
 The storage type of a variable is speficied by the `stype` attribute of the variable.
 The storage type of a symbolic expression is inferred based on the storage types of the variables and the operators.
@@ -43,12 +60,11 @@ array([ 1.,  1.],
 .. note:: most operators provided in ``mxnet.symbol.sparse`` are similar to those in
    ``mxnet.symbol`` although there are few differences:
 
-   - Only a subset of operators in ``mxnet.symbol`` have specialized implementations in ``mxnet.symbol.sparse``.
-     Operators such as reduction and broadcasting do not have sparse implementations yet.
+   - Only a subset of operators in ``mxnet.symbol`` have efficient sparse implementations in ``mxnet.symbol.sparse``.
+   - If an operator do not occur in the ``mxnet.symbol.sparse`` namespace, that means the operator does not have an efficient sparse implementation yet. If sparse inputs are passed to such an operator, it will convert inputs to the dense format and fallback to the already available dense implementation.
    - The storage types (``stype``) of sparse operators' outputs depend on the storage types of inputs.
      By default the operators not available in ``mxnet.symbol.sparse`` infer "default" (dense) storage type for outputs.
      Please refer to the API reference section for further details on specific operators.
-   - GPU support for ``mxnet.symbol.sparse`` is experimental.
 
 ```
 
@@ -74,6 +90,15 @@ In the rest of this document, we list sparse related routines provided by the
     :nosignatures:
 
     cast_storage
+```
+
+### Joining arrays
+
+```eval_rst
+.. autosummary::
+    :nosignatures:
+
+    concat
 ```
 
 ### Indexing routines
