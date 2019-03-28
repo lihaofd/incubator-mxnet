@@ -7723,6 +7723,6 @@ def test_image_normalize():
 
 
 if __name__ == '__main__':
-    #import nose
-    #nose.runmodule()
-    test_lstm_sym()
+    import nose
+    nose.runmodule()
+    #test_lstm_sym()

@@ -37,6 +37,11 @@
 #include "mkldnn.hpp"
 #include "./mkldnn_base-inl.h"
 
+// MSVC doesn't support collapse clause in omp parallel
+#if defined(_MSC_VER) && !defined(__clang__) && !defined(__INTEL_COMPILER)
+#define collapse(x)
+#endif
+
 namespace mxnet {
 namespace op {
 
