@@ -57,6 +57,7 @@ def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req, rtol=1e-2, atol=1e
     mod2.forward(batch, is_train=False)
     assert_allclose(mod1.get_outputs()[0].asnumpy(), mod2.get_outputs()[0].asnumpy(), rtol=rtol, atol=atol)
 
+    '''
     # check training
     mod1.forward(batch, is_train=True)
     mod2.forward(batch, is_train=True)
@@ -70,22 +71,22 @@ def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req, rtol=1e-2, atol=1e
     else:
         assert(mod1.get_input_grads()[0] == None)
         assert(mod2.get_input_grads()[0] == None)
-
+    '''
 
 
 @with_seed()
 @assert_raises_cudnn_not_satisfied(min_version='5.1.10')
 def test_lstm_sym():
     T, N, I, H = 5, 32, 800, 800
-    fused = mx.rnn.FusedRNNCell(H, num_layers=3, mode='lstm', get_next_state=True, prefix='')
+    fused = mx.rnn.FusedRNNCell(H, num_layers=1, mode='lstm', get_next_state=True, prefix='')
     stack = mx.rnn.SequentialRNNCell()
     stack.add(mx.rnn.LSTMCell(H, prefix='l0_'))
-    stack.add(mx.rnn.LSTMCell(H, prefix='l1_'))
-    stack.add(mx.rnn.LSTMCell(H, prefix='l2_'))
+    #stack.add(mx.rnn.LSTMCell(H, prefix='l1_'))
+    #stack.add(mx.rnn.LSTMCell(H, prefix='l2_'))
 
     check_rnn_consistency(fused, stack, T, N, I, H, 'write')
-    check_rnn_consistency(fused, stack, T, N, I, H, 'add')
-    check_rnn_consistency(fused, stack, T, N, I, H, 'null')
+    #check_rnn_consistency(fused, stack, T, N, I, H, 'add')
+    #check_rnn_consistency(fused, stack, T, N, I, H, 'null')
 
 @with_seed()
 @assert_raises_cudnn_not_satisfied(min_version='5.1.10')
@@ -7722,5 +7723,6 @@ def test_image_normalize():
 
 
 if __name__ == '__main__':
-    import nose
-    nose.runmodule()
+    #import nose
+    #nose.runmodule()
+    test_lstm_sym()
