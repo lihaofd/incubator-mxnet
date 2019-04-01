@@ -170,11 +170,16 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
 
   DType* wx = w_ptr;
   DType* wh = w_ptr + I * H * ngates;
-  weight_layer_memory.set_data_handle(wx);
-  weight_iter_memory.set_data_handle(wh);
+  auto mpd_x = mkldnn::memory::primitive_desc({weights_layer_r_tz,
+        mkldnn_dtype, mkldnn::memory::format::ldgoi}, cpu_engine);
+  auto src_wx_f = mkldnn::memory(mpd_x, wx);
+  auto mpd_h = mkldnn::memory::primitive_desc({weights_iter_r_tz,
+        mkldnn_dtype, mkldnn::memory::format::ldgoi}, cpu_engine);
+  auto src_wh_f = mkldnn::memory(mpd_h, wh);
+  ReorderData(src_wx_f, weight_layer_memory);
+  ReorderData(src_wh_f, weight_iter_memory);
 
-  DType* user_bias_f = reinterpret_cast<DType *>
-          (bias_memory.get_data_handle());
+  DType* user_bias_f = reinterpret_cast<DType *> (bias_memory.get_data_handle());
   #pragma omp parallel for num_threads(omp_threads)
   for (int j = 0; j < L * single_b_size; j++) {
     int k = j / single_b_size;
