@@ -37,11 +37,6 @@
 #include "mkldnn.hpp"
 #include "./mkldnn_base-inl.h"
 
-// MSVC doesn't support collapse clause in omp parallel
-#if defined(_MSC_VER) && !defined(__clang__) && !defined(__INTEL_COMPILER)
-#define collapse(x)
-#endif
-
 namespace mxnet {
 namespace op {
 
@@ -96,858 +91,10 @@ void ConcatData(mkldnn::memory::format src_format,
   MKLDNNStream::Get()->Submit();
 }
 
-/*
+
 // since there is different sematics of MKLDNN's Fused RNN and Mxnet FusedRNN,
 // bidirectional will be fused layer by layer,
 // unidirectional will be done by fused 1 + fused (L - 1) layers or fused L layers(when I = H)
-template <typename DType>
-void MKLDNNRNNForwardSingleLayerBi(bool state_outputs,
-                                   const int T,
-                                   const int N,
-                                   const int I,
-                                   const int H,
-                                   DType* x_ptr,
-                                   mkldnn::memory user_src_layer_memory,
-                                   DType* hx_ptr,
-                                   DType* cx_ptr,
-                                   DType* w_ptr,
-                                   DType* b_ptr,
-                                   DType* y_ptr,
-                                   DType* hy_ptr,
-                                   DType* cy_ptr,
-                                   std::vector<mkldnn::memory> *concat_weight_memory,
-                                   std::vector<mkldnn::memory> *concat_iter_memory,
-                                   std::vector<mkldnn::memory> *x_memory,
-                                   std::vector<mkldnn::memory> *hcx_memory,
-                                   std::vector<mkldnn::memory> *wx_memory,
-                                   std::vector<mkldnn::memory> *wh_memory,
-                                   std::vector<mkldnn::memory> *bias_memory,
-                                   std::vector<mkldnn::memory> *cached_wx_memory,
-                                   std::vector<mkldnn::memory> *cached_wh_memory,
-                                   std::vector<mkldnn::memory> *cached_bias_memory,
-                                   std::vector<mkldnn::memory> *y_memory,
-                                   std::vector<mkldnn::memory> *hcy_memory,
-                                   std::vector<primitive> *rnn_forward_prim,
-                                   size_t* call_num,
-                                   size_t layer_index,
-                                   int dtype,
-                                   int mode) {
-  int ngates = 0, nstates = 0;
-  algorithm nalgorithm = GetMKLDNNRNNAlgo(mode, &ngates, &nstates);
-  mkldnn::memory::data_type mkldnn_dtype = get_mkldnn_type(dtype);
-  const int single_cell_size = N * H;
-  const int single_b_size = ngates * H;
-  DType* wx = w_ptr;  //  ngates * H, I
-  DType* wh = w_ptr + I * H * ngates;  //  ngates * H, H
-  DType* back_wx = w_ptr + ngates * H * (I + H);
-  DType* back_wh = back_wx + I * H * ngates;
-  DType* bx = b_ptr;
-  DType* bh = b_ptr + H * ngates;
-  DType* back_bx = b_ptr + single_b_size * 2;
-  DType* back_bh = back_bx + H * ngates;
-  const int omp_threads = mxnet::engine::OpenMP::Get()->GetRecommendedOMPThreadCount();
-  auto cpu_engine = CpuEngine::Get()->get_engine();
-  auto null_memory_ = null_memory(cpu_engine);
-  int offset1 = 0, offset2 = 0;
-  mkldnn::memory::dims src_layer_tz = {T, N, I};
-  mkldnn::memory::dims dst_layer_tz = {T, N, 2 * H};
-  mkldnn::memory::dims weights_layer_tz = {1, 2, I, ngates, H};  //  ldigo
-  mkldnn::memory::dims weights_layer_r_tz = {1, 1, I, ngates, H};  //  ldigo for reorder
-  mkldnn::memory::dims weights_iter_tz = {1, 2, H, ngates, H};  //  ldigo
-  mkldnn::memory::dims weights_iter_r_tz = {1, 1, H, ngates, H};  //  ldigo for reorder
-  mkldnn::memory::dims bias_tz = {1, 2, ngates, H};
-  mkldnn::memory::dims src_iter_tz = {1, 2, nstates, N, H};  //  ldsnc
-  mkldnn::memory::dims dst_iter_tz = {1, 2, nstates, N, H};  //  ldsnc
-  auto user_weight_layer_md = mkldnn::memory::desc(
-      { weights_layer_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
-  auto user_weight_iter_md = mkldnn::memory::desc(
-      { weights_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
-  if ((*call_num) <= cached_wx_memory->size()) {
-    auto src_wx = (*concat_weight_memory)[2 * layer_index];
-    auto src_wh = (*concat_weight_memory)[2 * layer_index + 1];
-    std::vector<void*> srcs_data1;
-    srcs_data1.push_back(wx);
-    srcs_data1.push_back(back_wx);
-    ConcatData(mkldnn::memory::format::ldgoi, mkldnn::memory::format::ldgoi,
-        {weights_layer_r_tz, weights_layer_r_tz}, weights_layer_tz,
-        mkldnn_dtype, 1, srcs_data1, src_wx);
-    srcs_data1.clear();
-    srcs_data1.push_back(wh);
-    srcs_data1.push_back(back_wh);
-    ConcatData(mkldnn::memory::format::ldgoi, mkldnn::memory::format::ldgoi,
-        {weights_iter_r_tz, weights_iter_r_tz}, weights_iter_tz,
-         mkldnn_dtype, 1, srcs_data1, src_wh);
-    int cache_index = -1;
-    if (cached_wx_memory->size() > 0) {
-      cache_index = ((*call_num) - 1)% cached_wx_memory->size();
-      ReorderData(src_wx, (*cached_wx_memory)[cache_index]);
-      ReorderData(src_wh, (*cached_wh_memory)[cache_index]);
-      (*wx_memory)[layer_index].set_data_handle((*cached_wx_memory)[cache_index].get_data_handle());
-      (*wh_memory)[layer_index].set_data_handle((*cached_wh_memory)[cache_index].get_data_handle());
-      (*bias_memory)[layer_index].set_data_handle(
-          (*cached_bias_memory)[cache_index].get_data_handle());
-    } else {
-      ReorderData(src_wx, (*wx_memory)[layer_index]);
-      ReorderData(src_wh, (*wh_memory)[layer_index]);
-    }
-    DType* user_bias = reinterpret_cast<DType *>
-        ((*bias_memory)[layer_index].get_data_handle());
-    #pragma omp parallel for num_threads(omp_threads)
-    for (int j = 0; j < single_b_size; j++) {
-      user_bias[j] = bx[j] + bh[j];
-      user_bias[single_b_size + j] = back_bx[j] + back_bh[j];
-    }
-  } else {
-    int cache_index = ((*call_num) - 1) % cached_wx_memory->size();
-    (*wx_memory)[layer_index].set_data_handle((*cached_wx_memory)[cache_index].get_data_handle());
-    (*wh_memory)[layer_index].set_data_handle((*cached_wh_memory)[cache_index].get_data_handle());
-    (*bias_memory)[layer_index].set_data_handle(
-        (*cached_bias_memory)[cache_index].get_data_handle());
-  }
-  auto user_src_layer_md = mkldnn::memory::desc(
-      { src_layer_tz }, mkldnn_dtype, mkldnn::memory::format::tnc);
-  auto user_bias_md = mkldnn::memory::desc({ bias_tz },
-      mkldnn_dtype, mkldnn::memory::format::ldgo);
-  auto dst_layer_md = mkldnn::memory::desc(
-      { dst_layer_tz }, mkldnn_dtype, mkldnn::memory::format::tnc);
-  auto dst_iter_md = mkldnn::memory::desc(
-      { dst_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-  if (x_ptr && layer_index == 0) {
-    (*x_memory)[layer_index].set_data_handle(x_ptr);
-  } else {
-    (*x_memory)[layer_index].set_data_handle(user_src_layer_memory.get_data_handle());
-  }
-  auto user_src_iter_md = mkldnn::memory::desc(
-      { src_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-  auto user_src_iter_memory = (*concat_iter_memory)[2];
-
-  if (mode == rnn_enum::kLstm) {
-    std::vector<void*> srcs_data1;
-    srcs_data1.push_back(hx_ptr);
-    srcs_data1.push_back(cx_ptr);
-    auto tmp1_src_iter_memory = (*concat_iter_memory)[0];
-    ConcatData(mkldnn::memory::format::ldsnc, mkldnn::memory::format::ldsnc,
-        {{1, 1, 1, N, H}, {1, 1, 1, N, H}}, {1, 1, nstates, N, H}, mkldnn_dtype, 2,
-        srcs_data1, tmp1_src_iter_memory);
-    std::vector<void*> srcs_data2;
-    srcs_data2.push_back(hx_ptr + single_cell_size);
-    srcs_data2.push_back(cx_ptr + single_cell_size);
-    auto tmp2_src_iter_memory = (*concat_iter_memory)[1];
-    ConcatData(mkldnn::memory::format::ldsnc, mkldnn::memory::format::ldsnc,
-        {{1, 1, 1, N, H}, {1, 1, 1, N, H}}, {1, 1, nstates, N, H}, mkldnn_dtype, 2,
-        srcs_data2, tmp2_src_iter_memory);
-    std::vector<void*> srcs_data3;
-    srcs_data3.push_back(reinterpret_cast<DType *>(tmp1_src_iter_memory.get_data_handle()));
-    srcs_data3.push_back(reinterpret_cast<DType *>(tmp2_src_iter_memory.get_data_handle()));
-    ConcatData(mkldnn::memory::format::ldsnc, mkldnn::memory::format::ldsnc,
-        {{1, 1, nstates, N, H}, {1, 1, nstates, N, H}}, {1, 2, nstates, N, H},
-        mkldnn_dtype, 1, srcs_data3, user_src_iter_memory);
-  }
-  (*hcx_memory)[layer_index].set_data_handle(user_src_iter_memory.get_data_handle());
-  rnn_cell::desc cell(nalgorithm);
-  rnn_forward::desc layer_desc(prop_kind::forward_inference, cell,
-      rnn_direction::bidirectional_concat, user_src_layer_md,
-      user_src_iter_md, user_weight_layer_md, user_weight_iter_md,
-      user_bias_md, dst_layer_md, dst_iter_md);
-  auto prim_desc = rnn_forward::primitive_desc(layer_desc, cpu_engine);
-  (*y_memory)[layer_index].set_data_handle(y_ptr);
-
-  if (rnn_forward_prim->size() <= layer_index) {
-    primitive rnn_prim = rnn_forward(prim_desc, (*x_memory)[layer_index],
-        (*hcx_memory)[layer_index], (*wx_memory)[layer_index], (*wh_memory)[layer_index],
-        (*bias_memory)[layer_index], (*y_memory)[layer_index],
-        (*hcy_memory)[layer_index], null_memory_);
-    rnn_forward_prim->push_back(rnn_prim);
-  }
-  MKLDNNStream::Get()->RegisterPrim((*rnn_forward_prim)[layer_index]);
-  MKLDNNStream::Get()->Submit();
-  if (state_outputs) {
-    offset1 = nstates * single_cell_size;
-    offset2 = (nstates + 1) * single_cell_size;
-    DType* dst_hcy = reinterpret_cast<DType *> ((*hcy_memory)[layer_index].get_data_handle());
-    if (mode == rnn_enum::kLstm) {
-      #pragma omp parallel for num_threads(omp_threads)
-      for (int n = 0; n < single_cell_size; n++) {
-        hy_ptr[n] = dst_hcy[n];
-        hy_ptr[n + single_cell_size] = dst_hcy[n + offset1];
-        cy_ptr[n] = dst_hcy[n + single_cell_size];
-        cy_ptr[n + single_cell_size] = dst_hcy[n + offset2];
-      }
-    }
-  }
-}
-
-template <typename DType>
-void MKLDNNRNNForwardUnidi(bool state_outputs,
-                           const int L,
-                           const int T,
-                           const int N,
-                           const int I,
-                           const int H,
-                           DType* x_ptr,
-                           mkldnn::memory user_src_layer_memory,
-                           DType* hx_ptr,
-                           DType* cx_ptr,
-                           DType* w_ptr,
-                           DType* b_ptr,
-                           DType* y_ptr,
-                           DType* hy_ptr,
-                           DType* cy_ptr,
-                           std::vector<mkldnn::memory> *concat_weight_memory,
-                           std::vector<mkldnn::memory> *concat_iter_memory,
-                           std::vector<mkldnn::memory> *x_memory,
-                           std::vector<mkldnn::memory> *hcx_memory,
-                           std::vector<mkldnn::memory> *wx_memory,
-                           std::vector<mkldnn::memory> *wh_memory,
-                           std::vector<mkldnn::memory> *bias_memory,
-                           std::vector<mkldnn::memory> *cached_wx_memory,
-                           std::vector<mkldnn::memory> *cached_wh_memory,
-                           std::vector<mkldnn::memory> *cached_bias_memory,
-                           std::vector<mkldnn::memory> *y_memory,
-                           std::vector<mkldnn::memory> *hcy_memory,
-                           std::vector<primitive> *rnn_forward_prim,
-                           size_t* call_num,
-                           size_t layer_index,
-                           int dtype,
-                           int mode) {
-  int ngates = 0, nstates = 0;
-  algorithm nalgorithm = GetMKLDNNRNNAlgo(mode, &ngates, &nstates);
-  mkldnn::memory::data_type mkldnn_dtype = get_mkldnn_type(dtype);
-  const int cell_size = N * H;
-  const int single_cell_size = N * H;
-  const int single_b_size = ngates * H;
-  int w_size = (I + H) * H * ngates;
-  const int omp_threads = mxnet::engine::OpenMP::Get()->GetRecommendedOMPThreadCount();
-  auto cpu_engine = CpuEngine::Get()->get_engine();
-  auto null_memory_ = null_memory(cpu_engine);
-  int offset1 = 0, offset2 = 0;
-  mkldnn::memory::dims src_layer_tz = {T, N, I};
-  mkldnn::memory::dims dst_layer_tz = {T, N, H};
-  mkldnn::memory::dims weights_layer_r_tz = {1, 1, I, ngates, H};  //  ldigo for reorder
-  mkldnn::memory::dims weights_iter_r_tz = {1, 1, H, ngates, H};  //  ldigo for reorder
-  auto user_src_layer_md = mkldnn::memory::desc(
-      { src_layer_tz }, mkldnn_dtype, mkldnn::memory::format::tnc);
-  auto dst_layer_md = mkldnn::memory::desc(
-      { dst_layer_tz }, mkldnn_dtype, mkldnn::memory::format::tnc);
-  if (x_ptr && layer_index == 0) {
-    (*x_memory)[layer_index].set_data_handle(x_ptr);
-  } else {
-    (*x_memory)[layer_index].set_data_handle(user_src_layer_memory.get_data_handle());
-  }
-  mkldnn::memory::dims weights_layer_tz = {L, 1, I, ngates, H};  //  ldigo
-  mkldnn::memory::dims weights_iter_tz = {L, 1, H, ngates, H};  //  ldigo
-  mkldnn::memory::dims bias_tz = {L, 1, ngates, H};
-  mkldnn::memory::dims src_iter_tz = {L, 1, nstates, N, H};  //  ldsnc
-  mkldnn::memory::dims dst_iter_tz = {L, 1, nstates, N, H};  //  ldsnc
-  auto user_src_iter_md = mkldnn::memory::desc(
-      { src_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-  auto user_weight_layer_md = mkldnn::memory::desc(
-      { weights_layer_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
-  auto user_weight_iter_md = mkldnn::memory::desc(
-      { weights_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
-  auto user_bias_md = mkldnn::memory::desc({ bias_tz },
-      mkldnn_dtype, mkldnn::memory::format::ldgo);
-  auto dst_iter_md = mkldnn::memory::desc(
-      { dst_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-  rnn_cell::desc cell(nalgorithm);
-  rnn_forward::desc layer_desc(prop_kind::forward_inference, cell,
-      rnn_direction::unidirectional, user_src_layer_md, user_src_iter_md,
-      user_weight_layer_md, user_weight_iter_md, user_bias_md, dst_layer_md, dst_iter_md);
-  auto prim_desc = rnn_forward::primitive_desc(layer_desc, cpu_engine);
-
-  for (int l = 0; l < L; l++) {
-    if (mode == rnn_enum::kLstm) {
-      std::vector<void*> srcs_data;
-      srcs_data.push_back(hx_ptr);
-      srcs_data.push_back(cx_ptr);
-      auto tmp_src_iter_memory = (*concat_iter_memory)[l + layer_index];
-      ConcatData(mkldnn::memory::format::ldsnc, mkldnn::memory::format::ldsnc,
-          {{1, 1, 1, N, H}, {1, 1, 1, N, H}}, {1, 1, nstates, N, H}, mkldnn_dtype,
-          2, srcs_data, tmp_src_iter_memory);
-    }
-    hx_ptr += cell_size;
-    if (mode == rnn_enum::kLstm) {
-      cx_ptr += cell_size;
-    }
-  }
-
-  auto user_src_iter_memory = null_memory_;
-  if (L == 1) {
-    user_src_iter_memory = (*concat_iter_memory)[layer_index];
-  } else {
-    user_src_iter_memory = (*concat_iter_memory)[L + layer_index];
-    std::vector<void*> src_l_data;
-    std::vector<mkldnn::memory::dims> src_l_dim;
-    for (int l = 0; l < L; l++) {
-      src_l_data.push_back(reinterpret_cast<DType *>
-          ((*concat_iter_memory)[l + layer_index].get_data_handle()));
-      src_l_dim.push_back({1, 1, nstates, N, H});
-    }
-    ConcatData(mkldnn::memory::format::ldsnc, mkldnn::memory::format::ldsnc, src_l_dim,
-        {L, 1, nstates, N, H}, mkldnn_dtype, 0, src_l_data, user_src_iter_memory);
-  }
-  (*hcx_memory)[layer_index].set_data_handle(user_src_iter_memory.get_data_handle());
-  if ((*call_num) <= cached_wx_memory->size()) {
-    auto src_wx_f = (*concat_weight_memory)[2 * layer_index];
-    auto src_wh_f = (*concat_weight_memory)[2 * layer_index + 1];
-    std::vector<void*> srcs_data_x;
-    std::vector<void*> srcs_data_h;
-    std::vector<mkldnn::memory::dims> src_l_dim_x;
-    std::vector<mkldnn::memory::dims> src_l_dim_h;
-    if (L == 1) {
-      DType* wx = w_ptr;
-      DType* wh = w_ptr + I * H * ngates;
-      src_wx_f.set_data_handle(wx);
-      src_wh_f.set_data_handle(wh);
-    } else {
-      for (int l = 0; l < L; l++) {
-        DType* wx = w_ptr;
-        DType* wh = w_ptr + I * H * ngates;
-        srcs_data_x.push_back(wx);
-        srcs_data_h.push_back(wh);
-        src_l_dim_x.push_back(weights_layer_r_tz);
-        src_l_dim_h.push_back(weights_iter_r_tz);
-        w_ptr = w_ptr + w_size;
-      }
-      ConcatData(mkldnn::memory::format::ldgoi, mkldnn::memory::format::ldgoi,
-          src_l_dim_x, weights_layer_tz, mkldnn_dtype, 0, srcs_data_x, src_wx_f);
-      ConcatData(mkldnn::memory::format::ldgoi, mkldnn::memory::format::ldgoi,
-          src_l_dim_h, weights_iter_tz, mkldnn_dtype, 0, srcs_data_h, src_wh_f);
-    }
-    // reorder L layers w
-    int cache_index = -1;
-    if (cached_wx_memory->size() > 0) {
-      cache_index = ((*call_num) - 1)% cached_wx_memory->size();
-      ReorderData(src_wx_f, (*cached_wx_memory)[cache_index]);
-      ReorderData(src_wh_f, (*cached_wh_memory)[cache_index]);
-      (*wx_memory)[layer_index].set_data_handle((*cached_wx_memory)[cache_index].get_data_handle());
-      (*wh_memory)[layer_index].set_data_handle((*cached_wh_memory)[cache_index].get_data_handle());
-      (*bias_memory)[layer_index].set_data_handle(
-          (*cached_bias_memory)[cache_index].get_data_handle());
-    } else {
-      ReorderData(src_wx_f, (*wx_memory)[layer_index]);
-      ReorderData(src_wh_f, (*wh_memory)[layer_index]);
-    }
-    DType* user_bias_f = reinterpret_cast<DType *>
-          ((*bias_memory)[layer_index].get_data_handle());
-    #pragma omp parallel for num_threads(omp_threads)
-    for (int j = 0; j < L * single_b_size; j++) {
-      int k = j / single_b_size;
-      user_bias_f[j] = b_ptr[j + k * single_b_size] + b_ptr[j + k * single_b_size + single_b_size];
-    }
-  } else {
-    int cache_index = ((*call_num) - 1) % cached_wx_memory->size();
-    (*wx_memory)[layer_index].set_data_handle((*cached_wx_memory)[cache_index].get_data_handle());
-    (*wh_memory)[layer_index].set_data_handle((*cached_wh_memory)[cache_index].get_data_handle());
-    (*bias_memory)[layer_index].set_data_handle(
-        (*cached_bias_memory)[cache_index].get_data_handle());
-  }
-  (*y_memory)[layer_index].set_data_handle(y_ptr);
-  if (rnn_forward_prim->size() <= layer_index) {
-    primitive rnn_prim = rnn_forward(prim_desc, (*x_memory)[layer_index],
-        (*hcx_memory)[layer_index], (*wx_memory)[layer_index], (*wh_memory)[layer_index],
-        (*bias_memory)[layer_index], (*y_memory)[layer_index],
-        (*hcy_memory)[layer_index], null_memory_);
-    rnn_forward_prim->push_back(rnn_prim);
-  }
-  MKLDNNStream::Get()->RegisterPrim((*rnn_forward_prim)[layer_index]);
-  MKLDNNStream::Get()->Submit();
-  if (state_outputs) {
-    DType* dst_hcy = reinterpret_cast<DType *> ((*hcy_memory)[layer_index].get_data_handle());
-    for (int l = 0; l < L; l++) {
-      offset1 = l * single_cell_size;
-      offset2 = l * nstates * single_cell_size;
-      if (mode == rnn_enum::kLstm) {
-        #pragma omp parallel for num_threads(omp_threads)
-        for (int n = 0; n < single_cell_size; n++) {
-          hy_ptr[offset1 + n] = dst_hcy[offset2 + n];
-          cy_ptr[offset1 + n] = dst_hcy[offset2 + n + single_cell_size];
-        }
-      }
-    }
-  }
-}
-
-
-
-inline size_t GetMKLDNNRNNCacheMemorySize(int L,
-                                           int D,
-                                           int T,
-                                           int N,
-                                           int I,
-                                           int H,
-                                           int mode) {
-  size_t size = 0;
-  switch (mode) {
-    case rnn_enum::kLstm:
-      size = 2 * (D * (I + H) * 4 * H + (L - 1) * D * (D * H + H) * 4 * H +
-             L * D * 2 * N * H) + T * N * D * H + L * 2 * D * 4 * H + (L + 2) * D * 2 * N * H +
-             6 * D * (I + H + 2) * 4 * H + T * N * I * 2 + L * 4 * (H + I + 2) * 7;
-      break;
-    case rnn_enum::kGru:
-    case rnn_enum::kRnnRelu:
-    case rnn_enum::kRnnTanh:
-    default:
-      LOG(FATAL) << "unknown RNN mode " << mode;
-      break;
-  }
-  return size;
-}
-
-void RNNComputeExCPU(const nnvm::NodeAttrs& attrs,
-                     const OpContext &ctx,
-                     const std::vector<NDArray> &inputs,
-                     const std::vector<OpReqType> &req,
-                     const std::vector<NDArray> &outputs) {
-  RNNParam& param = (RNNParam&)nnvm::get<RNNParam>(attrs.parsed);
-  std::vector<TBlob> in_blobs;
-  std::vector<TBlob> out_blobs;
-  std::vector<NDArray> temp_ndarrays_i;
-  std::vector<NDArray> temp_ndarrays_o;
-  for (const NDArray& in : inputs) {
-    if (in.storage_type() == kDefaultStorage) {
-      temp_ndarrays_i.push_back(in.Reorder2Default());
-      in_blobs.emplace_back(temp_ndarrays_i.back().data());
-    } else {
-      in_blobs.emplace_back(in.data());
-    }
-  }
-
-  for (const NDArray& out : outputs) {
-    if (out.storage_type() == kDefaultStorage) {
-      temp_ndarrays_o.push_back(out.Reorder2Default());
-      out_blobs.emplace_back(temp_ndarrays_o.back().data());
-    } else {
-      out_blobs.emplace_back(out.data());
-    }
-  }
-  int dtype = in_blobs[rnn_enum::kData].type_flag_;
-  mkldnn::memory::data_type mkldnn_dtype = get_mkldnn_type(dtype);
-  Stream<cpu> *s = ctx.get_stream<cpu>();
-  auto cpu_engine = CpuEngine::Get()->get_engine();
-  MSHADOW_REAL_TYPE_SWITCH(dtype, DType, {
-    MKLDNNRNNOp<DType> &RNNFwd =
-        GetMKLDNNRNNOp<DType>(param, inputs[rnn_enum::kData], inputs[rnn_enum::kParams],
-        outputs[rnn_enum::kOut], ctx.run_ctx.ctx);
-
-    int ngates = 0, nstates = 0;
-    GetMKLDNNRNNAlgo(RNNFwd.param_.mode, &ngates, &nstates);
-    int D = RNNFwd.param_.bidirectional ? 2 : 1;
-    Tensor<cpu, 3, DType> x = in_blobs[rnn_enum::kData].get<cpu, 3, DType>(s);
-    int T = x.shape_[0];
-    int N = x.shape_[1];
-    int I = x.shape_[2];
-    int H = RNNFwd.param_.state_size;
-    int L = RNNFwd.param_.num_layers;
-    const size_t r_size = GetMKLDNNRNNCacheMemorySize(L, D, T, N, I, H, RNNFwd.param_.mode);
-    if (RNNFwd.init_mem_ && RNNFwd.reserve_mem_size_ < r_size) {
-      Storage::Get()->Free(RNNFwd.mem_space_);
-      RNNFwd.init_mem_ = false;
-    }
-
-    if (!RNNFwd.init_mem_) {
-      RNNFwd.mem_space_ = Storage::Get()->Alloc(r_size * sizeof(DType), Context::CPU());
-      RNNFwd.reserve_mem_size_ = r_size;
-      RNNFwd.init_mem_ = true;
-    }
-    DType* workptr = static_cast<DType*>(RNNFwd.mem_space_.dptr);
-    mkldnn::memory::dims src_layer_tz_0 = {T, N, I};
-    mkldnn::memory::dims src_layer_tz = {T, N, D * H};
-    mkldnn::memory::dims dst_layer_tz = {T, N, D * H};
-    auto dst_layer_md = mkldnn::memory::desc(
-      { dst_layer_tz }, mkldnn_dtype, mkldnn::memory::format::tnc);
-    if (RNNFwd.x_memory.size() == 0) {
-      RNNFwd.call_num = 0;
-      if (D == 1 && I == H && L > 1) {
-        auto user_src_layer_md = mkldnn::memory::desc(
-            { src_layer_tz }, mkldnn_dtype, mkldnn::memory::format::tnc);
-        auto user_src_layer_memory_n = mkldnn::memory({ user_src_layer_md, cpu_engine });
-        RNNFwd.x_memory.push_back(user_src_layer_memory_n);
-
-        mkldnn::memory::dims weights_layer_tz = {L, 1, I, ngates, H};  //  ldigo
-        mkldnn::memory::dims weights_iter_tz = {L, 1, H, ngates, H};  //  ldigo
-        mkldnn::memory::dims bias_tz = {L, 1, ngates, H};
-        auto user_weight_layer_md = mkldnn::memory::desc(
-            { weights_layer_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
-        auto user_weight_iter_md = mkldnn::memory::desc(
-            { weights_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
-        auto user_bias_md = mkldnn::memory::desc({ bias_tz },
-            mkldnn_dtype, mkldnn::memory::format::ldgo);
-        DType* weight_layer_n = workptr;  //  L * I * ngates * H
-        auto user_weight_layer_memory_n
-            = mkldnn::memory({ user_weight_layer_md, cpu_engine }, weight_layer_n);
-        RNNFwd.wx_memory.push_back(user_weight_layer_memory_n);
-
-        DType* weight_iter_n = weight_layer_n + L * I * ngates * H;  //  L * H * ngates * H
-        auto user_weight_iter_memory_n
-            = mkldnn::memory({ user_weight_iter_md, cpu_engine }, weight_iter_n);
-        RNNFwd.wh_memory.push_back(user_weight_iter_memory_n);
-
-        DType* bias_n = weight_iter_n + L * H * ngates * H;  //  L * ngates * H
-        auto user_bias_memory_n =
-            mkldnn::memory({ user_bias_md, cpu_engine }, bias_n);
-        RNNFwd.bias_memory.push_back(user_bias_memory_n);
-
-        auto wx_md_n = mkldnn::memory::desc(
-            { weights_layer_tz }, mkldnn_dtype, mkldnn::memory::format::ldgoi);
-        DType* wx_n = bias_n + L * ngates * H;  //   L * ngates * I * H
-        auto wx_memory_n =
-            mkldnn::memory({ wx_md_n, cpu_engine }, wx_n);
-        DType* wh_n = wx_n + L * ngates * I * H;  //  L * ngates * H * H
-        auto wh_md_n = mkldnn::memory::desc(
-            { weights_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldgoi);
-        auto wh_memory_n =
-            mkldnn::memory({ wh_md_n, cpu_engine }, wh_n);
-
-        RNNFwd.concat_weight_memory.push_back(wx_memory_n);
-        RNNFwd.concat_weight_memory.push_back(wh_memory_n);
-        workptr = wh_n + L * ngates * H * H;
-
-        mkldnn::memory::dims src_iter_tz_n1 = {1, 1, nstates, N, H};  //  ldsnc
-        auto src_iter_md_n1 = mkldnn::memory::desc(
-            { src_iter_tz_n1 }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-        for (int l = 0; l < L; l++) {
-          DType* src_iter_n1 = workptr;  //  nstates * N * H
-          auto src_iter_memory_n1 =
-              mkldnn::memory({ src_iter_md_n1, cpu_engine }, src_iter_n1);
-          RNNFwd.concat_iter_memory.push_back(src_iter_memory_n1);
-          workptr = src_iter_n1 + nstates * N * H;
-        }
-        mkldnn::memory::dims src_iter_tz_n = {L, 1, nstates, N, H};  //  ldsnc
-        auto src_iter_md_n = mkldnn::memory::desc(
-            { src_iter_tz_n }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-        DType* src_iter_n = workptr;  //  L * nstates * N * H
-        auto src_iter_memory_n =
-            mkldnn::memory({ src_iter_md_n, cpu_engine }, src_iter_n);
-        RNNFwd.concat_iter_memory.push_back(src_iter_memory_n);
-        RNNFwd.hcx_memory.push_back(src_iter_memory_n);
-
-        DType* dst_layer_n = src_iter_n + L * nstates * N * H;  //  T * N * D * H
-        auto dst_layer_memory_n
-            = mkldnn::memory({ dst_layer_md, cpu_engine }, dst_layer_n);
-        RNNFwd.y_memory.push_back(dst_layer_memory_n);
-
-        mkldnn::memory::dims dst_iter_tz_n = {L, 1, nstates, N, H};  //  ldsnc
-        auto dst_iter_md_n = mkldnn::memory::desc(
-            { dst_iter_tz_n }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-        DType* dst_iter_n = dst_layer_n + T * N * D * H;  //  L * nstates * N * H
-        auto dst_iter_memory_n =
-            mkldnn::memory({ dst_iter_md_n, cpu_engine }, dst_iter_n);
-        RNNFwd.hcy_memory.push_back(dst_iter_memory_n);
-        workptr = dst_iter_n + L * nstates * N * H;
-
-        //  hard code for sockeye size testing
-        int cache_size = 0;
-        if (L == 7 && D == 1 && N == 64 && I == 512 && H == 512) {
-          cache_size = 1;
-        }
-        if (cache_size > 0) {
-          for (int i = 0; i < cache_size; i++) {
-            DType* weight_layer_i = workptr;  //  L * I * ngates * H
-            auto user_weight_layer_memory_i
-                = mkldnn::memory({ user_weight_layer_md, cpu_engine }, weight_layer_i);
-            RNNFwd.cached_wx_memory.push_back(user_weight_layer_memory_i);
-
-            DType* weight_iter_i = weight_layer_i + L * I * ngates * H;  //  L * H * ngates * H
-            auto user_weight_iter_memory_i
-                = mkldnn::memory({ user_weight_iter_md, cpu_engine }, weight_iter_i);
-            RNNFwd.cached_wh_memory.push_back(user_weight_iter_memory_i);
-
-            DType* bias_i = weight_iter_i + L * H * ngates * H;  //  L * ngates * H
-            auto user_bias_memory_i =
-                mkldnn::memory({ user_bias_md, cpu_engine }, bias_i);
-            RNNFwd.cached_bias_memory.push_back(user_bias_memory_i);
-            workptr = bias_i + L * ngates * H;
-          }
-        }
-        //  hard code for sockeye size
-
-      } else {
-        auto user_src_layer_md_0 = mkldnn::memory::desc(
-            { src_layer_tz_0 }, mkldnn_dtype, mkldnn::memory::format::tnc);
-        auto user_src_layer_memory_0 = mkldnn::memory({ user_src_layer_md_0, cpu_engine });
-        RNNFwd.x_memory.push_back(user_src_layer_memory_0);
-
-        mkldnn::memory::dims weights_layer_tz_0 = {1, D, I, ngates, H};  //  ldigo
-        mkldnn::memory::dims weights_iter_tz_0 = {1, D, H, ngates, H};  //  ldigo
-        mkldnn::memory::dims bias_tz_0 = {1, D, ngates, H};
-        auto user_weight_layer_md_0 = mkldnn::memory::desc(
-            { weights_layer_tz_0 }, mkldnn_dtype, mkldnn::memory::format::ldigo);
-        auto user_weight_iter_md_0 = mkldnn::memory::desc(
-            { weights_iter_tz_0 }, mkldnn_dtype, mkldnn::memory::format::ldigo);
-        auto user_bias_md_0 = mkldnn::memory::desc({ bias_tz_0 },
-            mkldnn_dtype, mkldnn::memory::format::ldgo);
-
-        DType* weight_layer_0 = workptr;  //  D * I * ngates * H
-        auto user_weight_layer_memory_0
-            = mkldnn::memory({ user_weight_layer_md_0, cpu_engine }, weight_layer_0);
-        RNNFwd.wx_memory.push_back(user_weight_layer_memory_0);
-
-        DType* weight_iter_0 = weight_layer_0 + D * I * ngates * H;  //  D * H * ngates * H
-        auto user_weight_iter_memory_0
-            = mkldnn::memory({ user_weight_iter_md_0, cpu_engine }, weight_iter_0);
-        RNNFwd.wh_memory.push_back(user_weight_iter_memory_0);
-
-        DType* bias_0 = weight_iter_0 + D * H * ngates * H;  //  D * ngates * H
-        auto user_bias_memory_0 =
-            mkldnn::memory({ user_bias_md_0, cpu_engine }, bias_0);
-        RNNFwd.bias_memory.push_back(user_bias_memory_0);
-        workptr = bias_0 + D * ngates * H;
-
-        auto wx_md_0 = mkldnn::memory::desc(
-            { weights_layer_tz_0 }, mkldnn_dtype, mkldnn::memory::format::ldgoi);
-        auto wx_memory_0 =
-            mkldnn::memory({ wx_md_0, cpu_engine });
-        auto wh_md_0 = mkldnn::memory::desc(
-            { weights_iter_tz_0 }, mkldnn_dtype, mkldnn::memory::format::ldgoi);
-        auto wh_memory_0 =
-            mkldnn::memory({ wh_md_0, cpu_engine });
-        if (D == 2) {
-          DType* wx_0 = workptr;  //  D * ngates * I * H
-          wx_memory_0.set_data_handle(wx_0);
-          DType* wh_0 = wx_0 + D * ngates * I * H;  //  D * ngates * H * H
-          wh_memory_0.set_data_handle(wh_0);
-          workptr = wh_0 + D * ngates * H * H;
-        }
-        RNNFwd.concat_weight_memory.push_back(wx_memory_0);
-        RNNFwd.concat_weight_memory.push_back(wh_memory_0);
-
-        mkldnn::memory::dims src_iter_undi_tz_0 = {1, 1, nstates, N, H};  //  ldsnc
-        auto src_iter_undi_md_0 = mkldnn::memory::desc(
-            { src_iter_undi_tz_0 }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-        DType* src_iter_undi_0 = workptr;  //  nstates * N * H
-        auto src_iter_undi_memory_0 =
-            mkldnn::memory({ src_iter_undi_md_0, cpu_engine }, src_iter_undi_0);
-        RNNFwd.concat_iter_memory.push_back(src_iter_undi_memory_0);
-        workptr = src_iter_undi_0 + nstates * N * H;
-        if (D == 1) {
-          RNNFwd.hcx_memory.push_back(src_iter_undi_memory_0);
-        } else {
-          DType* src_iter_undi2_0 = workptr;  //  nstates * N * H
-          auto src_iter_undi2_memory_0 =
-              mkldnn::memory({ src_iter_undi_md_0, cpu_engine }, src_iter_undi2_0);
-          RNNFwd.concat_iter_memory.push_back(src_iter_undi2_memory_0);
-
-          mkldnn::memory::dims src_iter_tz_0 = {1, D, nstates, N, H};  //  ldsnc
-          auto src_iter_md_0 = mkldnn::memory::desc(
-              { src_iter_tz_0 }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-          DType* src_iter_0 = src_iter_undi2_0 + nstates * N * H;  //  D * nstates * N * H
-          auto src_iter_memory_0 =
-              mkldnn::memory({ src_iter_md_0, cpu_engine }, src_iter_0);
-          RNNFwd.concat_iter_memory.push_back(src_iter_memory_0);
-          RNNFwd.hcx_memory.push_back(src_iter_memory_0);
-          workptr = src_iter_0 + D * nstates * N * H;
-        }
-
-        DType* dst_layer_0 = workptr;  //  T * N * D * H
-        auto dst_layer_memory_0
-            = mkldnn::memory({ dst_layer_md, cpu_engine }, dst_layer_0);
-        RNNFwd.y_memory.push_back(dst_layer_memory_0);
-
-        mkldnn::memory::dims dst_iter_tz_0 = {1, D, nstates, N, H};  //  ldsnc
-        auto dst_iter_md_0 = mkldnn::memory::desc(
-            { dst_iter_tz_0 }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-        DType* dst_iter_0 = dst_layer_0 + T * N * D * H;  //  D * nstates * N * H
-        auto dst_iter_memory_0 =
-            mkldnn::memory({ dst_iter_md_0, cpu_engine }, dst_iter_0);
-        RNNFwd.hcy_memory.push_back(dst_iter_memory_0);
-        workptr = dst_iter_0 + D * nstates * N * H;
-        //  hard code for sockeye size testing
-        int cache_size = 0;
-        if (L == 1 && D == 1 && T == 1 && N == 640 && I == 1024 && H == 512) {
-          cache_size = 7;
-        }
-        if (L == 1 && D == 1 && T == 1 && N == 640 && I == 768 && H == 512) {
-          cache_size = 1;
-        }
-        if (L == 1 && D == 2 && N == 64 && I == 256 && H == 256) {
-          cache_size = 1;
-        }
-        if (cache_size > 0) {
-          for (int i = 0; i < cache_size; i++) {
-            DType* weight_layer_i = workptr;  //  D * I * ngates * H
-            auto user_weight_layer_memory_i
-                = mkldnn::memory({ user_weight_layer_md_0, cpu_engine }, weight_layer_i);
-            RNNFwd.cached_wx_memory.push_back(user_weight_layer_memory_i);
-
-            DType* weight_iter_i = weight_layer_i + D * I * ngates * H;  //  D * H * ngates * H
-            auto user_weight_iter_memory_i
-                = mkldnn::memory({ user_weight_iter_md_0, cpu_engine }, weight_iter_i);
-            RNNFwd.cached_wh_memory.push_back(user_weight_iter_memory_i);
-
-            DType* bias_i = weight_iter_i + D * H * ngates * H;  //  D * ngates * H
-            auto user_bias_memory_i =
-                mkldnn::memory({ user_bias_md_0, cpu_engine }, bias_i);
-            RNNFwd.cached_bias_memory.push_back(user_bias_memory_i);
-            workptr = bias_i + D * ngates * H;
-          }
-        }
-        //  hard code for sockeye size
-
-        //  next L - 1 layers
-        auto user_src_layer_md = mkldnn::memory::desc(
-            { src_layer_tz }, mkldnn_dtype, mkldnn::memory::format::tnc);
-        auto user_src_layer_memory = mkldnn::memory({ user_src_layer_md, cpu_engine });
-        RNNFwd.x_memory.push_back(user_src_layer_memory);
-
-        if (L > 1 && D == 1) {
-          mkldnn::memory::dims weights_layer_tz = {L - 1, 1, H, ngates, H};  //  ldigo
-          mkldnn::memory::dims weights_iter_tz = {L - 1, 1, H, ngates, H};  //  ldigo
-          mkldnn::memory::dims bias_tz = {L - 1, 1, ngates, H};
-          auto user_weight_layer_md = mkldnn::memory::desc(
-              { weights_layer_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
-          auto user_weight_iter_md = mkldnn::memory::desc(
-              { weights_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
-          auto user_bias_md = mkldnn::memory::desc({ bias_tz },
-              mkldnn_dtype, mkldnn::memory::format::ldgo);
-
-          DType* weight_layer_n = workptr;  //  (L - 1) * H * ngates * H
-          auto user_weight_layer_memory_n
-              = mkldnn::memory({ user_weight_layer_md, cpu_engine }, weight_layer_n);
-          RNNFwd.wx_memory.push_back(user_weight_layer_memory_n);
-
-          DType* weight_iter_n = weight_layer_n +
-              (L - 1) * H * ngates * H;  //  (L - 1) * H * ngates * H
-          auto user_weight_iter_memory_n
-              = mkldnn::memory({ user_weight_iter_md, cpu_engine }, weight_iter_n);
-          RNNFwd.wh_memory.push_back(user_weight_iter_memory_n);
-
-          DType* bias_n = weight_iter_n + (L - 1) * H * ngates * H;  //  (L - 1) * ngates * H
-          auto user_bias_memory_n =
-              mkldnn::memory({ user_bias_md, cpu_engine }, bias_n);
-          RNNFwd.bias_memory.push_back(user_bias_memory_n);
-
-          auto wx_md_n = mkldnn::memory::desc(
-              { weights_layer_tz }, mkldnn_dtype, mkldnn::memory::format::ldgoi);
-          DType* wx_n = bias_n + (L - 1) * ngates * H;  //  (L - 1) * ngates * H * H
-          auto wx_memory_n =
-              mkldnn::memory({ wx_md_n, cpu_engine }, wx_n);
-          DType* wh_n = wx_n + (L - 1) * ngates * H * H;  //  (L - 1) * ngates * H * H
-          auto wh_md_n = mkldnn::memory::desc(
-              { weights_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldgoi);
-          auto wh_memory_n =
-              mkldnn::memory({ wh_md_n, cpu_engine }, wh_n);
-
-          RNNFwd.concat_weight_memory.push_back(wx_memory_n);
-          RNNFwd.concat_weight_memory.push_back(wh_memory_n);
-          workptr = wh_n + (L - 1) * ngates * H * H;
-
-          mkldnn::memory::dims src_iter_tz_n1 = {1, 1, nstates, N, H};  //  ldsnc
-          auto src_iter_md_n1 = mkldnn::memory::desc(
-              { src_iter_tz_n1 }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-          for (int l = 0; l < L - 1; l++) {
-            DType* src_iter_n1 = workptr;  //  nstates * N * H
-            auto src_iter_memory_n1 =
-                mkldnn::memory({ src_iter_md_n1, cpu_engine }, src_iter_n1);
-            RNNFwd.concat_iter_memory.push_back(src_iter_memory_n1);
-            workptr = src_iter_n1 + nstates * N * H;
-          }
-          mkldnn::memory::dims src_iter_tz_n = {L - 1, 1, nstates, N, H};  //  ldsnc
-          auto src_iter_md_n = mkldnn::memory::desc(
-              { src_iter_tz_n }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-          DType* src_iter_n = workptr;  //  (L - 1) * nstates * N * H
-          auto src_iter_memory_n =
-              mkldnn::memory({ src_iter_md_n, cpu_engine }, src_iter_n);
-          RNNFwd.concat_iter_memory.push_back(src_iter_memory_n);
-          RNNFwd.hcx_memory.push_back(src_iter_memory_n);
-
-          DType* dst_layer_n = src_iter_n + (L - 1) * nstates * N * H;  //  T * N * D * H
-          auto dst_layer_memory_n
-              = mkldnn::memory({ dst_layer_md, cpu_engine }, dst_layer_n);
-          RNNFwd.y_memory.push_back(dst_layer_memory_n);
-
-          mkldnn::memory::dims dst_iter_tz_n = {L - 1, 1, nstates, N, H};  //  ldsnc
-          auto dst_iter_md_n = mkldnn::memory::desc(
-              { dst_iter_tz_n }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-          DType* dst_iter_n = dst_layer_n + T * N * D * H;  //  (L - 1) * nstates * N * H
-          auto dst_iter_memory_n =
-              mkldnn::memory({ dst_iter_md_n, cpu_engine }, dst_iter_n);
-          RNNFwd.hcy_memory.push_back(dst_iter_memory_n);
-        }
-
-        if (L > 1 && D == 2) {
-          mkldnn::memory::dims weights_layer_tz = {1, D, H * D, ngates, H};  //  ldigo
-          mkldnn::memory::dims weights_iter_tz = {1, D, H, ngates, H};  //  ldigo
-          mkldnn::memory::dims bias_tz = {1, D, ngates, H};
-          auto user_weight_layer_md = mkldnn::memory::desc(
-              { weights_layer_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
-          auto user_weight_iter_md = mkldnn::memory::desc(
-              { weights_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
-          auto user_bias_md = mkldnn::memory::desc({ bias_tz },
-              mkldnn_dtype, mkldnn::memory::format::ldgo);
-
-          auto wx_md_n = mkldnn::memory::desc(
-              { weights_layer_tz }, mkldnn_dtype, mkldnn::memory::format::ldgoi);
-          auto wh_md_n = mkldnn::memory::desc(
-              { weights_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldgoi);
-
-          DType* weight_layer_n = workptr;  //  D * (H * D) * ngates * H
-          auto user_weight_layer_memory_n
-              = mkldnn::memory({ user_weight_layer_md, cpu_engine }, weight_layer_n);
-          RNNFwd.wx_memory.push_back(user_weight_layer_memory_n);
-
-          DType* weight_iter_n = weight_layer_n +
-              D * (H * D) * ngates * H;  //  D * H * ngates * H
-          auto user_weight_iter_memory_n
-              = mkldnn::memory({ user_weight_iter_md, cpu_engine }, weight_iter_n);
-          RNNFwd.wh_memory.push_back(user_weight_iter_memory_n);
-
-          DType* bias_n = weight_iter_n + D * H * ngates * H;  //  D * ngates * H
-          auto user_bias_memory_n =
-              mkldnn::memory({ user_bias_md, cpu_engine }, bias_n);
-          RNNFwd.bias_memory.push_back(user_bias_memory_n);
-
-          DType* wx_n = bias_n + D * ngates * H;  //  D * ngates * (D * H) * H
-          DType* wh_n = wx_n + D * ngates * (D * H) * H;  //  D * ngates * H * H
-          auto wx_memory_n =
-              mkldnn::memory({ wx_md_n, cpu_engine }, wx_n);
-          auto wh_memory_n =
-              mkldnn::memory({ wh_md_n, cpu_engine }, wh_n);
-          RNNFwd.concat_weight_memory.push_back(wx_memory_n);
-          RNNFwd.concat_weight_memory.push_back(wh_memory_n);
-
-          mkldnn::memory::dims src_iter_undi_tz = {1, 1, nstates, N, H};  //  ldsnc
-          auto src_iter_undi_md = mkldnn::memory::desc(
-              { src_iter_undi_tz }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-          DType* src_iter_undi = wh_n + D * ngates * H * H;  //  nstates * N * H
-          auto src_iter_undi_memory =
-              mkldnn::memory({ src_iter_undi_md, cpu_engine }, src_iter_undi);
-          RNNFwd.concat_iter_memory.push_back(src_iter_undi_memory_0);
-
-          DType* src_iter_undi2 = src_iter_undi + nstates * N * H;  //  nstates * N * H
-          auto src_iter_undi2_memory =
-              mkldnn::memory({ src_iter_undi_md, cpu_engine }, src_iter_undi2);
-          RNNFwd.concat_iter_memory.push_back(src_iter_undi2_memory);
-
-          mkldnn::memory::dims src_iter_tz = {1, D, nstates, N, H};  //  ldsnc
-          auto src_iter_md = mkldnn::memory::desc(
-              { src_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-          DType* src_iter = src_iter_undi2 + nstates * N * H;  //  D * nstates * N * H
-          auto src_iter_memory =
-              mkldnn::memory({ src_iter_md, cpu_engine }, src_iter);
-          RNNFwd.concat_iter_memory.push_back(src_iter_memory);
-          RNNFwd.hcx_memory.push_back(src_iter_memory);
-
-          DType* dst_layer_n = src_iter + D * nstates * N * H;  //  T * N * D * H
-          auto dst_layer_memory_n
-              = mkldnn::memory({ dst_layer_md, cpu_engine }, dst_layer_n);
-          RNNFwd.y_memory.push_back(dst_layer_memory_n);
-
-          mkldnn::memory::dims dst_iter_tz_n = {1, D, nstates, N, H};  //  ldsnc
-          auto dst_iter_md_n = mkldnn::memory::desc(
-              { dst_iter_tz_n }, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-          DType* dst_iter_n = dst_layer_n + T * N * D * H;  //  D * nstates * N * H
-          auto dst_iter_memory_n =
-              mkldnn::memory({ dst_iter_md_n, cpu_engine }, dst_iter_n);
-          RNNFwd.hcy_memory.push_back(dst_iter_memory_n);
-        }
-      }
-    }
-    RNNFwd.Forward(ctx, in_blobs, req, out_blobs);
-  });
-}
-*/
-
 template <typename DType>
 void MKLDNNRNNForwardUnidi(bool state_outputs,
                            const int L,
@@ -966,7 +113,6 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
                            int dtype,
                            int mode) {
   using namespace mkldnn;
-/*
   int ngates = 0, nstates = 0;
   algorithm nalgorithm = GetMKLDNNRNNAlgo(mode, &ngates, &nstates);
   mkldnn::memory::data_type mkldnn_dtype = get_mkldnn_type(dtype);
@@ -974,148 +120,12 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
   const int single_cell_size = N * H;
   const int single_b_size = ngates * H;
   int w_size = (I + H) * H * ngates;
-*/
+
   const int omp_threads = mxnet::engine::OpenMP::Get()->GetRecommendedOMPThreadCount();
   auto cpu_engine = CpuEngine::Get()->get_engine();
   auto null_memory_ = null_memory(cpu_engine);
   int offset1 = 0, offset2 = 0;
-
-  const int batch = 64;
-const int src_seq_length_max = 25;
-const int tgt_seq_length_max = 27;
-
-const int feature_size = 1024;
-
-const int enc_bidir_n_layers = 1;
-const int enc_unidir_n_layers = 7;
-const int dec_n_layers = 8;
-
-const int lstm_n_gates = 4;
-const int lstm_n_states = 2;
-
-  std::vector<primitive> weights_reorders;
-    std::vector<primitive> encoder_net;
-    std::vector<primitive> decoder_net;
-
-    std::vector<float> net_src(batch * src_seq_length_max * feature_size, 0.1f);
-    std::vector<float> net_dst(batch * tgt_seq_length_max * feature_size, 0.1f);
-
-    /* Quantization factors for fp32 data */
-
-    const float data_shift = 64.;
-    const float data_scale = 63.;
-    const int weights_scale_mask = 3; // 11 for last two dimensions of ldigo
-    std::vector<float> weights_scales(lstm_n_gates * feature_size);
-    /* assign halves of vector with arbitrary values */
-    const int scales_half = lstm_n_gates * feature_size / 2;
-    std::fill(
-            weights_scales.begin(), weights_scales.begin() + scales_half, 30.f);
-    std::fill(weights_scales.begin() + scales_half + 1, weights_scales.end(),
-            65.5f);
-
-    /* Encoder */
-
-    memory::dims enc_bidir_src_layer_tz
-            = { src_seq_length_max, batch, feature_size };
-    memory::dims enc_bidir_weights_layer_tz = { enc_bidir_n_layers, 2,
-        feature_size, lstm_n_gates, feature_size };
-    memory::dims enc_bidir_weights_iter_tz = { enc_bidir_n_layers, 2,
-        feature_size, lstm_n_gates, feature_size };
-    memory::dims enc_bidir_bias_tz
-            = { enc_bidir_n_layers, 2, lstm_n_gates, feature_size };
-    memory::dims enc_bidir_dst_layer_tz
-            = { src_seq_length_max, batch, 2 * feature_size };
-
-    /* GNMT encoder: 1 bidirectional layer and 7 unidirectional layers */
-
-    std::vector<float> user_enc_bidir_wei_layer(
-            enc_bidir_n_layers * 2 * feature_size * lstm_n_gates * feature_size,
-            0.3f);
-    std::vector<float> user_enc_bidir_wei_iter(
-            enc_bidir_n_layers * 2 * feature_size * lstm_n_gates * feature_size,
-            0.2f);
-    std::vector<float> user_enc_bidir_bias(
-            enc_bidir_n_layers * 2 * lstm_n_gates * feature_size, 1.0f);
-
-    /* Create the memory for user data */
-    auto user_enc_bidir_src_layer_md = memory::desc({ enc_bidir_src_layer_tz },
-            memory::data_type::f32, memory::format::tnc);
-
-    auto user_enc_bidir_wei_layer_md
-            = memory::desc({ enc_bidir_weights_layer_tz },
-                    memory::data_type::f32, memory::format::ldigo);
-
-    auto user_enc_bidir_wei_iter_md
-            = memory::desc({ enc_bidir_weights_iter_tz },
-                    memory::data_type::f32, memory::format::ldigo);
-
-    auto user_enc_bidir_bias_md = memory::desc({ enc_bidir_bias_tz },
-            memory::data_type::f32, memory::format::ldgo);
-
-    auto user_enc_bidir_src_layer_memory = memory(
-            { user_enc_bidir_src_layer_md, cpu_engine }, net_src.data());
-    auto user_enc_bidir_wei_layer_memory
-            = memory({ user_enc_bidir_wei_layer_md, cpu_engine },
-                    user_enc_bidir_wei_layer.data());
-    auto user_enc_bidir_wei_iter_memory
-            = memory({ user_enc_bidir_wei_iter_md, cpu_engine },
-                    user_enc_bidir_wei_iter.data());
-    auto user_enc_bidir_bias_memory = memory(
-            { user_enc_bidir_bias_md, cpu_engine }, user_enc_bidir_bias.data());
-
-    /* Create memory descriptors for RNN data w/o specified layout */
-    auto enc_bidir_src_layer_md = memory::desc({ enc_bidir_src_layer_tz },
-            memory::data_type::u8, memory::format::any);
-
-    auto enc_bidir_wei_layer_md = memory::desc({ enc_bidir_weights_layer_tz },
-            memory::data_type::s8, memory::format::any);
-
-    auto enc_bidir_wei_iter_md = memory::desc({ enc_bidir_weights_iter_tz },
-            memory::data_type::s8, memory::format::any);
-
-    auto enc_bidir_dst_layer_md = memory::desc({ enc_bidir_dst_layer_tz },
-            memory::data_type::u8, memory::format::any);
-
-    /* Create bidirectional RNN */
-    rnn_cell::desc bi_cell(algorithm::vanilla_lstm);
-
-    /* Check if int8 RNN is supported */
-    try {
-        rnn_forward::desc bi_layer_desc(prop_kind::forward_inference, bi_cell,
-                rnn_direction::bidirectional_concat, enc_bidir_src_layer_md,
-                zero_md(), enc_bidir_wei_layer_md, enc_bidir_wei_iter_md,
-                user_enc_bidir_bias_md, enc_bidir_dst_layer_md, zero_md());
-    } catch (error &e) {
-        if (e.status == mkldnn_unimplemented) {
-            std::cerr
-                    << "Dependency on Intel(R) MKL version 2019u2 or newer is "
-                       "required for int8 RNN"
-                    << std::endl;
-        }
-        throw;
-    }
-
-    rnn_forward::desc bi_layer_desc(prop_kind::forward_inference, bi_cell,
-            rnn_direction::bidirectional_concat, enc_bidir_src_layer_md,
-            zero_md(), enc_bidir_wei_layer_md, enc_bidir_wei_iter_md,
-            user_enc_bidir_bias_md, enc_bidir_dst_layer_md, zero_md());
-
-    /* Define RNN attributes that store quantization parameters */
-    primitive_attr attr;
-    attr.set_int_output_round_mode(round_mode::round_nearest);
-    attr.set_rnn_data_qparams(data_scale, data_shift);
-    attr.set_rnn_weights_qparams(weights_scale_mask, weights_scales);
-  LOG(INFO) << "11";
-   try {
-    auto enc_bidir_prim_desc
-            = rnn_forward::primitive_desc(bi_layer_desc, attr, cpu_engine);
-
-    LOG(INFO) << "12";
-  } catch (error &e) {
-        LOG(INFO) << "13:" << e.message;
-    }
-
-/*
+ 
   const float data_shift = 64.;
   const float data_scale = 63.;
 
@@ -1158,6 +168,18 @@ const int lstm_n_states = 2;
   auto weight_iter_memory = memory({weight_iter_md, cpu_engine});
   auto bias_memory = memory({bias_md, cpu_engine});
 
+  DType* wx = w_ptr;
+  DType* wh = w_ptr + I * H * ngates;
+  weight_layer_memory.set_data_handle(wx);
+  weight_iter_memory.set_data_handle(wh);
+
+  DType* user_bias_f = reinterpret_cast<DType *>
+          (bias_memory.get_data_handle());
+  #pragma omp parallel for num_threads(omp_threads)
+  for (int j = 0; j < L * single_b_size; j++) {
+    int k = j / single_b_size;
+    user_bias_f[j] = b_ptr[j + k * single_b_size] + b_ptr[j + k * single_b_size + single_b_size];
+  }
 
   auto src_layer_md_int8 = memory::desc({src_layer_tz },
           memory::data_type::u8, memory::format::any);
@@ -1170,7 +192,6 @@ const int lstm_n_states = 2;
 
   rnn_cell::desc lstm_cell(algorithm::vanilla_lstm);
 
-
   rnn_forward::desc layer_desc(prop_kind::forward_inference, lstm_cell,
           rnn_direction::unidirectional, src_layer_md_int8,
           zero_md(), weight_layer_md_int8, weight_iter_md_int8,
@@ -1180,161 +201,92 @@ const int lstm_n_states = 2;
   attr.set_rnn_data_qparams(data_scale, data_shift);
   attr.set_rnn_weights_qparams(weights_scale_mask, weights_scales);
   std::vector<primitive> rnn_net;
-  LOG(INFO) << "11";
-  try {
+  std::vector<primitive> weights_reorders;
+
   auto prim_desc
        = rnn_forward::primitive_desc(layer_desc, attr, cpu_engine);
-  LOG(INFO) << "12";
-  } catch (error &e) {
-        LOG(INFO) << "13:" << e.message;
-    }
+
   auto src_layer_memory_int8
        = memory(prim_desc.src_layer_primitive_desc());
   auto src_layer_reorder_pd = reorder::primitive_desc(
        src_layer_memory.get_primitive_desc(),
        src_layer_memory_int8.get_primitive_desc(), attr);
-  LOG(INFO) << "3";
   rnn_net.push_back(reorder(src_layer_reorder_pd,
              src_layer_memory, src_layer_memory_int8));
-  LOG(INFO) << "4";
+
+  auto weight_layer_memory_int8
+            = memory(prim_desc.weights_layer_primitive_desc());
+  auto weight_layer_reorder_pd = reorder::primitive_desc(
+          weight_layer_memory.get_primitive_desc(),
+          weight_layer_memory_int8.get_primitive_desc(), attr);
+  weights_reorders.push_back(reorder(weight_layer_reorder_pd,
+          weight_layer_memory, weight_layer_memory_int8));
+
+  auto weight_iter_memory_int8
+          = memory(prim_desc.weights_iter_primitive_desc());
+  auto weight_iter_reorder_pd = reorder::primitive_desc(
+          weight_iter_memory.get_primitive_desc(),
+          weight_iter_memory_int8.get_primitive_desc(), attr);
+  weights_reorders.push_back(reorder(weight_iter_reorder_pd,
+          weight_iter_memory, weight_iter_memory_int8));
+
+  auto dst_layer_memory_int8
+          = memory(prim_desc.dst_layer_primitive_desc());
+
+  dst_layer_memory_int8.set_data_handle(y_ptr);
+
+  rnn_net.push_back(
+          rnn_forward(prim_desc, src_layer_memory_int8,
+                  null_memory_, weight_layer_memory_int8,
+                  weight_iter_memory_int8, bias_memory,
+                  dst_layer_memory_int8, null_memory_, null_memory_));
+
+
+  int tmpnum = 3;
   DType* x = reinterpret_cast<DType *> (src_layer_memory.get_data_handle());
   DType* x_int8 = reinterpret_cast<DType *> (src_layer_memory_int8.get_data_handle());
-  for (int i =0 ; i<5 ;i++ ) {
-    LOG(INFO) << "x[" << i << "]:" << x[i] << "x_int8[" << i << "]:" << x_int8[i];
-  }
-  MKLDNNStream::Get()->RegisterPrim(rnn_net[0]);
-  MKLDNNStream::Get()->Submit();
-
-  for (int i =0 ; i<5 ;i++ ) {
-    LOG(INFO) << "x[" << i << "]:" << x[i] << "x_int8[" << i << "]:" << x_int8[i];
-  }
-*/
-/*
-  
-  if (x_ptr && layer_index == 0) {
-    (*x_memory)[layer_index].set_data_handle(x_ptr);
-  } else {
-    (*x_memory)[layer_index].set_data_handle(user_src_layer_memory.get_data_handle());
+  for (int i =0 ; i< tmpnum ;i++ ) {
+    LOG(INFO) << "x[" << i << "]:" << x[i] << " x_int8[" << i << "]:" << x_int8[i];
   }
 
-  rnn_cell::desc cell(nalgorithm);
-  rnn_forward::desc layer_desc(prop_kind::forward_inference, cell,
-      rnn_direction::unidirectional, user_src_layer_md, user_src_iter_md,
-      user_weight_layer_md, user_weight_iter_md, user_bias_md, dst_layer_md, dst_iter_md);
-  auto prim_desc = rnn_forward::primitive_desc(layer_desc, cpu_engine);
-
-  for (int l = 0; l < L; l++) {
-    if (mode == rnn_enum::kLstm) {
-      std::vector<void*> srcs_data;
-      srcs_data.push_back(hx_ptr);
-      srcs_data.push_back(cx_ptr);
-      auto tmp_src_iter_memory = (*concat_iter_memory)[l + layer_index];
-      ConcatData(mkldnn::memory::format::ldsnc, mkldnn::memory::format::ldsnc,
-          {{1, 1, 1, N, H}, {1, 1, 1, N, H}}, {1, 1, nstates, N, H}, mkldnn_dtype,
-          2, srcs_data, tmp_src_iter_memory);
-    }
-    hx_ptr += cell_size;
-    if (mode == rnn_enum::kLstm) {
-      cx_ptr += cell_size;
-    }
+  DType* w_x = reinterpret_cast<DType *> (weight_layer_memory.get_data_handle());
+  DType* w_x_int8 = reinterpret_cast<DType *> (weight_layer_memory_int8.get_data_handle());
+  for (int i =0 ; i< tmpnum ;i++ ) {
+    LOG(INFO) << "w_x[" << i << "]:" << w_x[i] << " w_x_int8[" << i << "]:" << w_x_int8[i];
   }
 
-  auto user_src_iter_memory = null_memory_;
-  if (L == 1) {
-    user_src_iter_memory = (*concat_iter_memory)[layer_index];
-  } else {
-    user_src_iter_memory = (*concat_iter_memory)[L + layer_index];
-    std::vector<void*> src_l_data;
-    std::vector<mkldnn::memory::dims> src_l_dim;
-    for (int l = 0; l < L; l++) {
-      src_l_data.push_back(reinterpret_cast<DType *>
-          ((*concat_iter_memory)[l + layer_index].get_data_handle()));
-      src_l_dim.push_back({1, 1, nstates, N, H});
-    }
-    ConcatData(mkldnn::memory::format::ldsnc, mkldnn::memory::format::ldsnc, src_l_dim,
-        {L, 1, nstates, N, H}, mkldnn_dtype, 0, src_l_data, user_src_iter_memory);
+  DType* w_h = reinterpret_cast<DType *> (weight_iter_memory.get_data_handle());
+  DType* w_h_int8 = reinterpret_cast<DType *> (weight_iter_memory_int8.get_data_handle());
+  for (int i =0 ; i< tmpnum ;i++ ) {
+    LOG(INFO) << "w_h[" << i << "]:" << w_h[i] << " w_h_int8[" << i << "]:" << w_h_int8[i];
   }
-  (*hcx_memory)[layer_index].set_data_handle(user_src_iter_memory.get_data_handle());
-  if ((*call_num) <= cached_wx_memory->size()) {
-    auto src_wx_f = (*concat_weight_memory)[2 * layer_index];
-    auto src_wh_f = (*concat_weight_memory)[2 * layer_index + 1];
-    std::vector<void*> srcs_data_x;
-    std::vector<void*> srcs_data_h;
-    std::vector<mkldnn::memory::dims> src_l_dim_x;
-    std::vector<mkldnn::memory::dims> src_l_dim_h;
-    if (L == 1) {
-      DType* wx = w_ptr;
-      DType* wh = w_ptr + I * H * ngates;
-      src_wx_f.set_data_handle(wx);
-      src_wh_f.set_data_handle(wh);
-    } else {
-      for (int l = 0; l < L; l++) {
-        DType* wx = w_ptr;
-        DType* wh = w_ptr + I * H * ngates;
-        srcs_data_x.push_back(wx);
-        srcs_data_h.push_back(wh);
-        src_l_dim_x.push_back(weights_layer_r_tz);
-        src_l_dim_h.push_back(weights_iter_r_tz);
-        w_ptr = w_ptr + w_size;
-      }
-      ConcatData(mkldnn::memory::format::ldgoi, mkldnn::memory::format::ldgoi,
-          src_l_dim_x, weights_layer_tz, mkldnn_dtype, 0, srcs_data_x, src_wx_f);
-      ConcatData(mkldnn::memory::format::ldgoi, mkldnn::memory::format::ldgoi,
-          src_l_dim_h, weights_iter_tz, mkldnn_dtype, 0, srcs_data_h, src_wh_f);
-    }
-    // reorder L layers w
-    int cache_index = -1;
-    if (cached_wx_memory->size() > 0) {
-      cache_index = ((*call_num) - 1)% cached_wx_memory->size();
-      ReorderData(src_wx_f, (*cached_wx_memory)[cache_index]);
-      ReorderData(src_wh_f, (*cached_wh_memory)[cache_index]);
-      (*wx_memory)[layer_index].set_data_handle((*cached_wx_memory)[cache_index].get_data_handle());
-      (*wh_memory)[layer_index].set_data_handle((*cached_wh_memory)[cache_index].get_data_handle());
-      (*bias_memory)[layer_index].set_data_handle(
-          (*cached_bias_memory)[cache_index].get_data_handle());
-    } else {
-      ReorderData(src_wx_f, (*wx_memory)[layer_index]);
-      ReorderData(src_wh_f, (*wh_memory)[layer_index]);
-    }
-    DType* user_bias_f = reinterpret_cast<DType *>
-          ((*bias_memory)[layer_index].get_data_handle());
-    #pragma omp parallel for num_threads(omp_threads)
-    for (int j = 0; j < L * single_b_size; j++) {
-      int k = j / single_b_size;
-      user_bias_f[j] = b_ptr[j + k * single_b_size] + b_ptr[j + k * single_b_size + single_b_size];
-    }
-  } else {
-    int cache_index = ((*call_num) - 1) % cached_wx_memory->size();
-    (*wx_memory)[layer_index].set_data_handle((*cached_wx_memory)[cache_index].get_data_handle());
-    (*wh_memory)[layer_index].set_data_handle((*cached_wh_memory)[cache_index].get_data_handle());
-    (*bias_memory)[layer_index].set_data_handle(
-        (*cached_bias_memory)[cache_index].get_data_handle());
+
+  DType* y_int8 = reinterpret_cast<DType *> (dst_layer_memory_int8.get_data_handle());
+  for (int i =0 ; i<tmpnum ;i++ ) {
+    LOG(INFO) << "y_int8[" << i << "]:" << y_int8[i];
   }
-  (*y_memory)[layer_index].set_data_handle(y_ptr);
-  if (rnn_forward_prim->size() <= layer_index) {
-    primitive rnn_prim = rnn_forward(prim_desc, (*x_memory)[layer_index],
-        (*hcx_memory)[layer_index], (*wx_memory)[layer_index], (*wh_memory)[layer_index],
-        (*bias_memory)[layer_index], (*y_memory)[layer_index],
-        (*hcy_memory)[layer_index], null_memory_);
-    rnn_forward_prim->push_back(rnn_prim);
+
+  stream(stream::kind::eager).submit(weights_reorders).wait();
+  stream(stream::kind::eager).submit(rnn_net).wait();
+  //MKLDNNStream::Get()->RegisterPrim(rnn_net[0]);
+  //MKLDNNStream::Get()->Submit();
+
+  for (int i =0 ; i< tmpnum ;i++ ) {
+    LOG(INFO) << "x[" << i << "]:" << x[i] << " x_int8[" << i << "]:" << x_int8[i];
   }
-  MKLDNNStream::Get()->RegisterPrim((*rnn_forward_prim)[layer_index]);
-  MKLDNNStream::Get()->Submit();
-  if (state_outputs) {
-    DType* dst_hcy = reinterpret_cast<DType *> ((*hcy_memory)[layer_index].get_data_handle());
-    for (int l = 0; l < L; l++) {
-      offset1 = l * single_cell_size;
-      offset2 = l * nstates * single_cell_size;
-      if (mode == rnn_enum::kLstm) {
-        #pragma omp parallel for num_threads(omp_threads)
-        for (int n = 0; n < single_cell_size; n++) {
-          hy_ptr[offset1 + n] = dst_hcy[offset2 + n];
-          cy_ptr[offset1 + n] = dst_hcy[offset2 + n + single_cell_size];
-        }
-      }
-    }
+
+  for (int i =0 ; i< tmpnum ;i++ ) {
+    LOG(INFO) << "w_x[" << i << "]:" << w_x[i] << " w_x_int8[" << i << "]:" << w_x_int8[i];
   }
-*/
+
+  for (int i =0 ; i< tmpnum ;i++ ) {
+    LOG(INFO) << "w_h[" << i << "]:" << w_h[i] << " w_h_int8[" << i << "]:" << w_h_int8[i];
+  }
+
+  for (int i =0 ; i<tmpnum ;i++ ) {
+    LOG(INFO) << "y_int8[" << i << "]:" << y_int8[i];
+  }
+
 }
 
 template <typename DType>
