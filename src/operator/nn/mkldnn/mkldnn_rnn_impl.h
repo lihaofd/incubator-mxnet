@@ -744,7 +744,7 @@ static void RNNStatefulComputeCPU(const OpStatePtr& state_ptr,
       //  start to cache
       if (D == 1 && I == H) {
         auto user_src_layer_md = mkldnn::memory::desc(
-            { src_layer_tz }, memory::data_type::u8, mkldnn::memory::format::tnc);
+            { src_layer_tz }, mkldnn_dtype, mkldnn::memory::format::tnc);
         auto user_src_layer_memory_n = mkldnn::memory({ user_src_layer_md, cpu_engine });
         op.x_memory.push_back(user_src_layer_memory_n);
 
@@ -752,9 +752,9 @@ static void RNNStatefulComputeCPU(const OpStatePtr& state_ptr,
         mkldnn::memory::dims weights_iter_tz = {L, 1, H, ngates, H};  //  ldigo
         mkldnn::memory::dims bias_tz = {L, 1, ngates, H};
         auto user_weight_layer_md = mkldnn::memory::desc(
-            { weights_layer_tz }, memory::data_type::s8, mkldnn::memory::format::ldigo);
+            { weights_layer_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
         auto user_weight_iter_md = mkldnn::memory::desc(
-            { weights_iter_tz }, memory::data_type::s8, mkldnn::memory::format::ldigo);
+            { weights_iter_tz }, mkldnn_dtype, mkldnn::memory::format::ldigo);
         auto user_bias_md = mkldnn::memory::desc({ bias_tz },
             mkldnn_dtype, mkldnn::memory::format::ldgo);
         DType* weight_layer_n = workptr;  //  L * I * ngates * H
