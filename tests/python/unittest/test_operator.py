@@ -32,7 +32,7 @@ from common import setup_module, with_seed, teardown, assert_raises_cudnn_not_sa
 import unittest
 import os
 
-def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req, rtol=1e-2, atol=1e-4):
+def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req, rtol=1e-2, atol=1e-2):
     dshape = (N, T, I)
     data = mx.sym.Variable('data')
 
@@ -78,7 +78,7 @@ def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req, rtol=1e-2, atol=1e
 @assert_raises_cudnn_not_satisfied(min_version='5.1.10')
 def test_lstm_sym():
     T, N, I, H = 5, 32, 800, 800
-    T, N, I, H = 1, 1, 1, 1
+    #T, N, I, H = 1, 1, 1, 1
     fused = mx.rnn.FusedRNNCell(H, num_layers=1, mode='lstm', get_next_state=True, prefix='')
     stack = mx.rnn.SequentialRNNCell()
     stack.add(mx.rnn.LSTMCell(H, prefix='l0_'))
