@@ -115,6 +115,50 @@ inline size_t GetMKLDNNRNNCacheMemorySize(int L,
   return size;
 }
 
+inline size_t GetMKLDNNRNNCacheMemorySize_u8(int L,
+                                             int D,
+                                             int T,
+                                             int N,
+                                             int I,
+                                             int H,
+                                             int mode) {
+  size_t size = 0;
+  switch (mode) {
+    case rnn_enum::kLstm:
+      size = T * N * I + T * N * D * H;
+      break;
+    case rnn_enum::kGru:
+    case rnn_enum::kRnnRelu:
+    case rnn_enum::kRnnTanh:
+    default:
+      LOG(FATAL) << "unknown RNN mode " << mode;
+      break;
+  }
+  return size;
+}
+
+inline size_t GetMKLDNNRNNCacheMemorySize_s8(int L,
+                                             int D,
+                                             int T,
+                                             int N,
+                                             int I,
+                                             int H,
+                                             int mode) {
+  size_t size = 0;
+  switch (mode) {
+    case rnn_enum::kLstm:
+      size = D * 4 * H * (I + H) + (L - 1) * D * 4 * H * ((D * H) + H);
+      break;
+    case rnn_enum::kGru:
+    case rnn_enum::kRnnRelu:
+    case rnn_enum::kRnnTanh:
+    default:
+      LOG(FATAL) << "unknown RNN mode " << mode;
+      break;
+  }
+  return size;
+}
+
 // since there is different sematics of MKLDNN's Fused RNN and Mxnet FusedRNN,
 // bidirectional will be fused layer by layer,
 // unidirectional will be done by fused 1 + fused (L - 1) layers or fused L layers(when I = H)
@@ -713,6 +757,7 @@ static void RNNStatefulComputeCPU(const OpStatePtr& state_ptr,
     MKLDNNRNNOp<DType>& op = state_ptr.get_state<MKLDNNRNNOp<DType>>();
     const RNNParam& param = op.param_;
 
+/*
     int ngates = 0, nstates = 0;
     GetMKLDNNRNNAlgo(param.mode, &ngates, &nstates);
     int D = param.bidirectional ? 2 : 1;
@@ -723,14 +768,18 @@ static void RNNStatefulComputeCPU(const OpStatePtr& state_ptr,
     int H = param.state_size;
     int L = param.num_layers;
     const size_t r_size = GetMKLDNNRNNCacheMemorySize(L, D, T, N, I, H, param.mode);
-    if (op.init_mem_ && op.reserve_mem_size_ < r_size) {
+    const size_t r_size_s8 = GetMKLDNNRNNCacheMemorySize_s8(L, D, T, N, I, H, param.mode);
+    const size_t r_size_u8 = GetMKLDNNRNNCacheMemorySize_u8(L, D, T, N, I, H, param.mode);
+    if (op.init_mem_ && op.reserve_mem_size_ < (r_size + r_size_s8 + r_size_u8)) {
       Storage::Get()->Free(op.mem_space_);
       op.init_mem_ = false;
     }
 
     if (!op.init_mem_) {
-      op.mem_space_ = Storage::Get()->Alloc(r_size * sizeof(DType), Context::CPU());
-      op.reserve_mem_size_ = r_size;
+      op.mem_space_ = Storage::Get()->Alloc(
+          r_size * sizeof(DType) + r_size_s8 * sizeof(int8_t) + r_size_u8 * sizeof(uint8_t),
+          Context::CPU());
+      op.reserve_mem_size_ = r_size + r_size_s8 + r_size_u8;
       op.init_mem_ = true;
     }
     DType* workptr = static_cast<DType*>(op.mem_space_.dptr);
@@ -740,7 +789,7 @@ static void RNNStatefulComputeCPU(const OpStatePtr& state_ptr,
     auto dst_layer_md = mkldnn::memory::desc(
       { dst_layer_tz }, mkldnn_dtype, mkldnn::memory::format::tnc);
 
-    if (op.wx_memory.size() == 0) {
+    if (op.wx_memory.size() > 0) {
       //  start to cache
       if (D == 1 && I == H) {
         auto user_src_layer_md = mkldnn::memory::desc(
@@ -823,6 +872,7 @@ static void RNNStatefulComputeCPU(const OpStatePtr& state_ptr,
         //  others
       }
     }
+*/
     op.Forward(ctx, in_blobs, req, out_blobs);
   });
 }
