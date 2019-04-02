@@ -121,6 +121,7 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
                            std::vector<mkldnn::memory> *y_memory,
                            std::vector<mkldnn::memory> *hcy_memory,
                            std::vector<primitive> *rnn_forward_prim,
+                           bool has_nextlayer,
                            int dtype,
                            int mode) {
   using namespace mkldnn;
@@ -246,11 +247,6 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
 
   rnn_cell::desc lstm_cell(algorithm::vanilla_lstm);
 
-  rnn_forward::desc layer_desc(prop_kind::forward_inference, lstm_cell,
-          rnn_direction::unidirectional, src_layer_md_u8,
-          src_iter_md, weight_layer_md_s8, weight_iter_md_s8,
-          bias_md, dst_layer_md_u8, dst_iter_md);
-
   primitive_attr attr;
   attr.set_int_output_round_mode(round_mode::round_nearest);
   attr.set_rnn_data_qparams(data_scale, data_shift);
@@ -258,73 +254,131 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
   std::vector<primitive> rnn_net;
   std::vector<primitive> weights_reorders;
 
-  auto prim_desc
-       = rnn_forward::primitive_desc(layer_desc, attr, cpu_engine);
+  auto dst_layer_memory = null_memory_;
+  auto dst_layer_memory_u8 = null_memory_;
+  auto dst_iter_memory = null_memory_;
+  auto src_layer_memory_u8 = null_memory_;
+  auto weight_layer_memory_s8 = null_memory_;
+  auto weight_iter_memory_s8 = null_memory_;
 
-  auto src_layer_memory_u8
+  if (!has_nextlayer) {  //  last layer output
+    rnn_forward::desc layer_desc(prop_kind::forward_inference, lstm_cell,
+        rnn_direction::unidirectional, src_layer_md_u8,
+        src_iter_md, weight_layer_md_s8, weight_iter_md_s8,
+        bias_md, dst_layer_md, dst_iter_md); 
+
+    auto prim_desc
+         = rnn_forward::primitive_desc(layer_desc, attr, cpu_engine);
+  
+    src_layer_memory_u8
        = memory(prim_desc.src_layer_primitive_desc());
-  auto src_layer_reorder_pd = reorder::primitive_desc(
+    auto src_layer_reorder_pd = reorder::primitive_desc(
        src_layer_memory.get_primitive_desc(),
        src_layer_memory_u8.get_primitive_desc(), attr);
-  rnn_net.push_back(reorder(src_layer_reorder_pd,
+    rnn_net.push_back(reorder(src_layer_reorder_pd,
              src_layer_memory, src_layer_memory_u8));
 
-  auto weight_layer_memory_s8
+    weight_layer_memory_s8
             = memory(prim_desc.weights_layer_primitive_desc());
-  auto weight_layer_reorder_pd = reorder::primitive_desc(
+    auto weight_layer_reorder_pd = reorder::primitive_desc(
           weight_layer_memory.get_primitive_desc(),
           weight_layer_memory_s8.get_primitive_desc(), attr);
-  weights_reorders.push_back(reorder(weight_layer_reorder_pd,
+    weights_reorders.push_back(reorder(weight_layer_reorder_pd,
           weight_layer_memory, weight_layer_memory_s8));
 
-  auto weight_iter_memory_s8
+    weight_iter_memory_s8
           = memory(prim_desc.weights_iter_primitive_desc());
-  auto weight_iter_reorder_pd = reorder::primitive_desc(
+    auto weight_iter_reorder_pd = reorder::primitive_desc(
           weight_iter_memory.get_primitive_desc(),
           weight_iter_memory_s8.get_primitive_desc(), attr);
-  weights_reorders.push_back(reorder(weight_iter_reorder_pd,
+    weights_reorders.push_back(reorder(weight_iter_reorder_pd,
           weight_iter_memory, weight_iter_memory_s8));
 
-  auto dst_layer_memory_u8
-          = memory(prim_desc.dst_layer_primitive_desc());
-  auto dst_iter_memory
+    dst_iter_memory
           = memory(prim_desc.dst_iter_primitive_desc());
 
-  dst_layer_memory_u8.set_data_handle(y_ptr);
+    dst_layer_memory
+          = memory(prim_desc.dst_layer_primitive_desc());
+    dst_layer_memory.set_data_handle(y_ptr);
+    rnn_net.push_back(
+        rnn_forward(prim_desc, src_layer_memory_u8,
+            src_iter_memory, weight_layer_memory_s8,
+            weight_iter_memory_s8, b_memory,
+            dst_layer_memory, dst_iter_memory, null_memory_));
 
-  rnn_net.push_back(
-          rnn_forward(prim_desc, src_layer_memory_u8,
-                  src_iter_memory, weight_layer_memory_s8,
-                  weight_iter_memory_s8, b_memory,
-                  dst_layer_memory_u8, dst_iter_memory, null_memory_));
+  } else {
+    rnn_forward::desc layer_desc(prop_kind::forward_inference, lstm_cell,
+        rnn_direction::unidirectional, src_layer_md_u8,
+        src_iter_md, weight_layer_md_s8, weight_iter_md_s8,
+        bias_md, dst_layer_md_u8, dst_iter_md); 
+
+    auto prim_desc
+         = rnn_forward::primitive_desc(layer_desc, attr, cpu_engine);
+
+    src_layer_memory_u8
+       = memory(prim_desc.src_layer_primitive_desc());
+    auto src_layer_reorder_pd = reorder::primitive_desc(
+       src_layer_memory.get_primitive_desc(),
+       src_layer_memory_u8.get_primitive_desc(), attr);
+    rnn_net.push_back(reorder(src_layer_reorder_pd,
+             src_layer_memory, src_layer_memory_u8));
+
+    weight_layer_memory_s8
+            = memory(prim_desc.weights_layer_primitive_desc());
+    auto weight_layer_reorder_pd = reorder::primitive_desc(
+          weight_layer_memory.get_primitive_desc(),
+          weight_layer_memory_s8.get_primitive_desc(), attr);
+    weights_reorders.push_back(reorder(weight_layer_reorder_pd,
+          weight_layer_memory, weight_layer_memory_s8));
+
+    weight_iter_memory_s8
+          = memory(prim_desc.weights_iter_primitive_desc());
+    auto weight_iter_reorder_pd = reorder::primitive_desc(
+          weight_iter_memory.get_primitive_desc(),
+          weight_iter_memory_s8.get_primitive_desc(), attr);
+    weights_reorders.push_back(reorder(weight_iter_reorder_pd,
+          weight_iter_memory, weight_iter_memory_s8));
+
+    dst_iter_memory
+          = memory(prim_desc.dst_iter_primitive_desc());
+
+    dst_layer_memory_u8
+          = memory(prim_desc.dst_layer_primitive_desc());
+    rnn_net.push_back(
+        rnn_forward(prim_desc, src_layer_memory_u8,
+            src_iter_memory, weight_layer_memory_s8,
+            weight_iter_memory_s8, b_memory,
+            dst_layer_memory_u8, dst_iter_memory, null_memory_));
+  }
 
 /*
   int tmpnum = 3;
   DType* x = reinterpret_cast<DType *> (src_layer_memory.get_data_handle());
-  DType* x_int8 = reinterpret_cast<DType *> (src_layer_memory_u8.get_data_handle());
+  uint8_t* x_int8 = reinterpret_cast<uint8_t *> (src_layer_memory_u8.get_data_handle());
   for (int i =0 ; i< tmpnum ;i++ ) {
-    LOG(INFO) << "x[" << i << "]:" << x[i] << " x_int8[" << i << "]:" << x_int8[i];
+    LOG(INFO) << "x[" << i << "]:" << x[i] << " x_int8[" << i << "]:" << (int)x_int8[i];
   }
 
   DType* w_x = reinterpret_cast<DType *> (weight_layer_memory.get_data_handle());
-  DType* w_x_int8 = reinterpret_cast<DType *> (weight_layer_memory_s8.get_data_handle());
+  int8_t* w_x_int8 = reinterpret_cast<int8_t *> (weight_layer_memory_s8.get_data_handle());
   for (int i =0 ; i< tmpnum ;i++ ) {
-    LOG(INFO) << "w_x[" << i << "]:" << w_x[i] << " w_x_int8[" << i << "]:" << w_x_int8[i];
+    LOG(INFO) << "w_x[" << i << "]:" << w_x[i] << " w_x_int8[" << i << "]:" << (int)w_x_int8[i];
   }
 
   DType* w_h = reinterpret_cast<DType *> (weight_iter_memory.get_data_handle());
-  DType* w_h_int8 = reinterpret_cast<DType *> (weight_iter_memory_s8.get_data_handle());
+  int8_t* w_h_int8 = reinterpret_cast<int8_t *> (weight_iter_memory_s8.get_data_handle());
   for (int i =0 ; i< tmpnum ;i++ ) {
-    LOG(INFO) << "w_h[" << i << "]:" << w_h[i] << " w_h_int8[" << i << "]:" << w_h_int8[i];
+    LOG(INFO) << "w_h[" << i << "]:" << w_h[i] << " w_h_int8[" << i << "]:" << (int)w_h_int8[i];
   }
 
-  DType* y_int8 = reinterpret_cast<DType *> (dst_layer_memory_u8.get_data_handle());
-  for (int i =0 ; i<tmpnum ;i++ ) {
-    LOG(INFO) << "y_int8[" << i << "]:" << y_int8[i];
+  DType* y = reinterpret_cast<DType *> (dst_layer_memory.get_data_handle());
+  for (int i =0 ; i< tmpnum ;i++ ) {
+    LOG(INFO) << "y[" << i << "]:" << y[i];
   }
 */
   stream(stream::kind::eager).submit(weights_reorders).wait();
   stream(stream::kind::eager).submit(rnn_net).wait();
+
   if (state_outputs) {
     //DType* dst_hcy = reinterpret_cast<DType *> ((*hcy_memory)[layer_index].get_data_handle());
     DType* dst_hcy = reinterpret_cast<DType *> (dst_iter_memory.get_data_handle());
@@ -343,22 +397,21 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
 
 /*
   for (int i =0 ; i< tmpnum ;i++ ) {
-    LOG(INFO) << "x[" << i << "]:" << x[i] << " x_int8[" << i << "]:" << x_int8[i];
+    LOG(INFO) << "x[" << i << "]:" << x[i] << " x_int8[" << i << "]:" << (int)x_int8[i];
   }
 
   for (int i =0 ; i< tmpnum ;i++ ) {
-    LOG(INFO) << "w_x[" << i << "]:" << w_x[i] << " w_x_int8[" << i << "]:" << w_x_int8[i];
+    LOG(INFO) << "w_x[" << i << "]:" << w_x[i] << " w_x_int8[" << i << "]:" << (int)w_x_int8[i];
   }
 
   for (int i =0 ; i< tmpnum ;i++ ) {
-    LOG(INFO) << "w_h[" << i << "]:" << w_h[i] << " w_h_int8[" << i << "]:" << w_h_int8[i];
+    LOG(INFO) << "w_h[" << i << "]:" << w_h[i] << " w_h_int8[" << i << "]:" << (int)w_h_int8[i];
   }
 
-  for (int i =0 ; i<tmpnum ;i++ ) {
-    LOG(INFO) << "y_int8[" << i << "]:" << y_int8[i];
+  for (int i =0 ; i< tmpnum ;i++ ) {
+    LOG(INFO) << "y[" << i << "]:" << y[i];
   }
 */
-
 }
 
 template <typename DType>
@@ -404,7 +457,7 @@ void MKLDNNRNNForwardINT8(bool state_outputs,
     MKLDNNRNNForwardUnidi(state_outputs, L, T, N, I, H, x_ptr, null_memory_,
         hx_ptr, cx_ptr, w_ptr, b_ptr, y_ptr, hy_ptr, cy_ptr, concat_weight_memory,
         concat_iter_memory, x_memory, hcx_memory, wx_memory, wh_memory,
-        bias_memory, y_memory, hcy_memory, rnn_forward_prim, dtype, mode);
+        bias_memory, y_memory, hcy_memory, rnn_forward_prim, false, dtype, mode);
   } else {
   }
 }
