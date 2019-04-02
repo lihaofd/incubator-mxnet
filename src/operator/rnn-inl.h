@@ -1382,6 +1382,7 @@ class RNNOp {
   Storage::Handle reserve_cpu_space_;
 };  //  class RNNOp
 
+#if MXNET_USE_MKLDNN == 0
 static OpStatePtr CreateRNNState(const nnvm::NodeAttrs &attrs,
                                  const Context ctx,
                                  const mxnet::ShapeVector &in_shapes,
@@ -1397,7 +1398,7 @@ static OpStatePtr CreateRNNState(const nnvm::NodeAttrs &attrs,
   });
   return state;
 }
-
+#endif
 template<typename xpu>
 void RNNStatefulCompute(const OpStatePtr& state,
                         const OpContext& ctx,
