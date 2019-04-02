@@ -145,9 +145,9 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
   std::vector<float> weights_scales(ngates * H);
   const dim_t scales_half = ngates * H / 2;
   std::fill(
-          weights_scales.begin(), weights_scales.begin() + scales_half, 60.f);
-  std::fill(weights_scales.begin() + scales_half + 1, weights_scales.end(), 131.f);
-          //65.5f);
+          weights_scales.begin(), weights_scales.begin() + scales_half, 30.f);
+  std::fill(weights_scales.begin() + scales_half + 1, weights_scales.end(), 65.5f);
+
   mkldnn::memory::dims src_layer_tz = {T, N, I};
   mkldnn::memory::dims dst_layer_tz = {T, N, H};
   mkldnn::memory::dims weights_layer_tz = {L, 1, I, ngates, H};  //  ldigo
@@ -235,21 +235,21 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
     user_bias_f[j] = b_ptr[j + k * single_b_size] + b_ptr[j + k * single_b_size + single_b_size];
   }
 
-  auto src_layer_md_int8 = memory::desc({src_layer_tz },
+  auto src_layer_md_u8 = memory::desc({src_layer_tz },
           memory::data_type::u8, memory::format::any);
-  auto weight_layer_md_int8 = memory::desc({weights_layer_tz },
+  auto weight_layer_md_s8 = memory::desc({weights_layer_tz },
           memory::data_type::s8, memory::format::any);
-  auto weight_iter_md_int8 = memory::desc({weights_iter_tz },
+  auto weight_iter_md_s8 = memory::desc({weights_iter_tz },
           memory::data_type::s8, memory::format::any);
-  auto dst_layer_md_int8 = memory::desc({dst_layer_tz },
+  auto dst_layer_md_u8 = memory::desc({dst_layer_tz },
           memory::data_type::u8, memory::format::any);
 
   rnn_cell::desc lstm_cell(algorithm::vanilla_lstm);
 
   rnn_forward::desc layer_desc(prop_kind::forward_inference, lstm_cell,
-          rnn_direction::unidirectional, src_layer_md_int8,
-          src_iter_md, weight_layer_md_int8, weight_iter_md_int8,
-          bias_md, dst_layer_md_int8, dst_iter_md);
+          rnn_direction::unidirectional, src_layer_md_u8,
+          src_iter_md, weight_layer_md_s8, weight_iter_md_s8,
+          bias_md, dst_layer_md_u8, dst_iter_md);
 
   primitive_attr attr;
   attr.set_int_output_round_mode(round_mode::round_nearest);
@@ -261,64 +261,64 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
   auto prim_desc
        = rnn_forward::primitive_desc(layer_desc, attr, cpu_engine);
 
-  auto src_layer_memory_int8
+  auto src_layer_memory_u8
        = memory(prim_desc.src_layer_primitive_desc());
   auto src_layer_reorder_pd = reorder::primitive_desc(
        src_layer_memory.get_primitive_desc(),
-       src_layer_memory_int8.get_primitive_desc(), attr);
+       src_layer_memory_u8.get_primitive_desc(), attr);
   rnn_net.push_back(reorder(src_layer_reorder_pd,
-             src_layer_memory, src_layer_memory_int8));
+             src_layer_memory, src_layer_memory_u8));
 
-  auto weight_layer_memory_int8
+  auto weight_layer_memory_s8
             = memory(prim_desc.weights_layer_primitive_desc());
   auto weight_layer_reorder_pd = reorder::primitive_desc(
           weight_layer_memory.get_primitive_desc(),
-          weight_layer_memory_int8.get_primitive_desc(), attr);
+          weight_layer_memory_s8.get_primitive_desc(), attr);
   weights_reorders.push_back(reorder(weight_layer_reorder_pd,
-          weight_layer_memory, weight_layer_memory_int8));
+          weight_layer_memory, weight_layer_memory_s8));
 
-  auto weight_iter_memory_int8
+  auto weight_iter_memory_s8
           = memory(prim_desc.weights_iter_primitive_desc());
   auto weight_iter_reorder_pd = reorder::primitive_desc(
           weight_iter_memory.get_primitive_desc(),
-          weight_iter_memory_int8.get_primitive_desc(), attr);
+          weight_iter_memory_s8.get_primitive_desc(), attr);
   weights_reorders.push_back(reorder(weight_iter_reorder_pd,
-          weight_iter_memory, weight_iter_memory_int8));
+          weight_iter_memory, weight_iter_memory_s8));
 
-  auto dst_layer_memory_int8
+  auto dst_layer_memory_u8
           = memory(prim_desc.dst_layer_primitive_desc());
   auto dst_iter_memory
           = memory(prim_desc.dst_iter_primitive_desc());
 
-  dst_layer_memory_int8.set_data_handle(y_ptr);
+  dst_layer_memory_u8.set_data_handle(y_ptr);
 
   rnn_net.push_back(
-          rnn_forward(prim_desc, src_layer_memory_int8,
-                  src_iter_memory, weight_layer_memory_int8,
-                  weight_iter_memory_int8, b_memory,
-                  dst_layer_memory_int8, dst_iter_memory, null_memory_));
+          rnn_forward(prim_desc, src_layer_memory_u8,
+                  src_iter_memory, weight_layer_memory_s8,
+                  weight_iter_memory_s8, b_memory,
+                  dst_layer_memory_u8, dst_iter_memory, null_memory_));
 
 /*
   int tmpnum = 3;
   DType* x = reinterpret_cast<DType *> (src_layer_memory.get_data_handle());
-  DType* x_int8 = reinterpret_cast<DType *> (src_layer_memory_int8.get_data_handle());
+  DType* x_int8 = reinterpret_cast<DType *> (src_layer_memory_u8.get_data_handle());
   for (int i =0 ; i< tmpnum ;i++ ) {
     LOG(INFO) << "x[" << i << "]:" << x[i] << " x_int8[" << i << "]:" << x_int8[i];
   }
 
   DType* w_x = reinterpret_cast<DType *> (weight_layer_memory.get_data_handle());
-  DType* w_x_int8 = reinterpret_cast<DType *> (weight_layer_memory_int8.get_data_handle());
+  DType* w_x_int8 = reinterpret_cast<DType *> (weight_layer_memory_s8.get_data_handle());
   for (int i =0 ; i< tmpnum ;i++ ) {
     LOG(INFO) << "w_x[" << i << "]:" << w_x[i] << " w_x_int8[" << i << "]:" << w_x_int8[i];
   }
 
   DType* w_h = reinterpret_cast<DType *> (weight_iter_memory.get_data_handle());
-  DType* w_h_int8 = reinterpret_cast<DType *> (weight_iter_memory_int8.get_data_handle());
+  DType* w_h_int8 = reinterpret_cast<DType *> (weight_iter_memory_s8.get_data_handle());
   for (int i =0 ; i< tmpnum ;i++ ) {
     LOG(INFO) << "w_h[" << i << "]:" << w_h[i] << " w_h_int8[" << i << "]:" << w_h_int8[i];
   }
 
-  DType* y_int8 = reinterpret_cast<DType *> (dst_layer_memory_int8.get_data_handle());
+  DType* y_int8 = reinterpret_cast<DType *> (dst_layer_memory_u8.get_data_handle());
   for (int i =0 ; i<tmpnum ;i++ ) {
     LOG(INFO) << "y_int8[" << i << "]:" << y_int8[i];
   }
