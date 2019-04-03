@@ -182,12 +182,12 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
   auto null_memory_ = null_memory(cpu_engine);
   int offset1 = 0, offset2 = 0;
   bool cached = *has_cache;
- 
+
   const float data_shift = 64.;
   const float data_scale = 63.;
 
-  const int weights_scale_mask = 3; // 11 for last two dimensions of ldigo
-  
+  const int weights_scale_mask = 3;  // 11 for last two dimensions of ldigo
+
   mkldnn::memory::dims src_layer_tz = {T, N, I};
   mkldnn::memory::dims dst_layer_tz = {T, N, H};
   mkldnn::memory::dims weights_layer_tz = {L, 1, I, ngates, H};  //  ldigo
@@ -198,16 +198,10 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
   mkldnn::memory::dims weights_layer_r_tz = {1, 1, I, ngates, H};  //  ldigo for reorder
   mkldnn::memory::dims weights_iter_r_tz = {1, 1, H, ngates, H};  //  ldigo for reorder
 
-  //auto src_layer_md = mkldnn::memory::desc(
-      //{src_layer_tz}, mkldnn_dtype, mkldnn::memory::format::tnc);
   auto dst_layer_md = mkldnn::memory::desc(
       {dst_layer_tz}, mkldnn_dtype, mkldnn::memory::format::tnc);
   auto src_iter_md = mkldnn::memory::desc(
       {src_iter_tz}, mkldnn_dtype, mkldnn::memory::format::ldsnc);
-  //auto weight_layer_md = mkldnn::memory::desc(
-      //{weights_layer_tz}, mkldnn_dtype, mkldnn::memory::format::ldigo);
-  //auto weight_iter_md = mkldnn::memory::desc(
-      //{weights_iter_tz}, mkldnn_dtype, mkldnn::memory::format::ldigo);
   auto bias_md = mkldnn::memory::desc({bias_tz},
       mkldnn_dtype, mkldnn::memory::format::ldgo);
   auto dst_iter_md = mkldnn::memory::desc(
@@ -254,7 +248,7 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
   std::vector<mkldnn::memory::dims> src_l_dim_x;
   std::vector<mkldnn::memory::dims> src_l_dim_h;
   std::vector<float> weights_scales(ngates * H);
-  if (!cached) {    
+  if (!cached) {
     if (L == 1) {
       DType* wx = w_ptr;
       DType* wh = w_ptr + I * H * ngates;
@@ -285,7 +279,7 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
         DType* wx_tensor_data = wx_tensor.dptr_;
         DType* wh_tensor_data = wh_tensor.dptr_;
         #pragma omp parallel for num_threads(omp_threads)
-        for (int i = 0; i< ngates * H; i++ ) {
+        for (int i = 0; i < ngates * H; i++) {
           DType max_wx = getmax(wx_tensor_data + i * I, I);
           DType max_wh = getmax(wh_tensor_data + i * H, H);
           tmp_max[i][l] = max_wx > max_wh ? max_wx : max_wh;
@@ -293,7 +287,7 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
         w_ptr = w_ptr + w_size;
       }
       #pragma omp parallel for num_threads(omp_threads)
-      for (int i = 0; i< ngates * H; i++) {
+      for (int i = 0; i < ngates * H; i++) {
         weights_scales[i] = data_scale/getmax(tmp_max[i], L);
       }
       ConcatData(mkldnn::memory::format::ldgoi, mkldnn::memory::format::ldgoi,
@@ -303,7 +297,7 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
     }
     ReorderData(src_wx_f, (*wx_memory)[layer_index]);
     ReorderData(src_wh_f, (*wh_memory)[layer_index]);
-    
+
     DType* user_bias_f = reinterpret_cast<DType *> ((*bias_memory)[layer_index].get_data_handle());
     #pragma omp parallel for num_threads(omp_threads)
     for (int j = 0; j < L * single_b_size; j++) {
@@ -311,7 +305,7 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
       user_bias_f[j] = b_ptr[j + k * single_b_size] + b_ptr[j + k * single_b_size + single_b_size];
     }
     // cached data is ready now
-  } 
+  }
   auto src_layer_md_u8 = memory::desc({src_layer_tz },
           memory::data_type::u8, memory::format::any);
   auto weight_layer_md_s8 = memory::desc({weights_layer_tz },
@@ -339,7 +333,7 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
   rnn_forward::desc layer_desc(prop_kind::forward_inference, lstm_cell,
       rnn_direction::unidirectional, src_layer_md_u8,
       src_iter_md, weight_layer_md_s8, weight_iter_md_s8,
-      bias_md, has_nextlayer ? dst_layer_md_u8 : dst_layer_md, dst_iter_md); 
+      bias_md, has_nextlayer ? dst_layer_md_u8 : dst_layer_md, dst_iter_md);
 
   auto prim_desc
        = rnn_forward::primitive_desc(layer_desc, attr, cpu_engine);
@@ -384,10 +378,10 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
   }
 
   if (rnn_forward_prim->size() <= layer_index) {
-    if (has_nextlayer) {    
+    if (has_nextlayer) {
       dst_layer_memory_u8
           = mkldnn::memory(prim_desc.dst_layer_primitive_desc());
-      y_memory_u8->push_back(dst_layer_memory_u8);      
+      y_memory_u8->push_back(dst_layer_memory_u8);
     }
     primitive rnn_prim = rnn_forward(prim_desc, (*x_memory_u8)[layer_index],
           (*hcx_memory)[layer_index], (*wx_memory_s8)[layer_index],
@@ -454,13 +448,13 @@ void MKLDNNRNNForwardINT8(bool state_outputs,
   int ngates = 0, nstates = 0;
   GetMKLDNNRNNAlgo(mode, &ngates, &nstates);
   const int b_size = 2 * H * ngates * D;
-  //const int cell_size = N * H * D;
+  //  const int cell_size = N * H * D;
   //  First layer
   int w_size = (I + H) * H * ngates * D;
   auto cpu_engine = CpuEngine::Get()->get_engine();
   auto null_memory_ = null_memory(cpu_engine);
   DType* tmpNull = NULL;
-  
+
   // when D = 1 and I == H, L layers can be fused together
   if (D == 1 && I == H) {
     MKLDNNRNNForwardUnidi(state_outputs, L, T, N, I, H, x_ptr, null_memory_,
@@ -480,7 +474,7 @@ void MKLDNNRNNForwardINT8(bool state_outputs,
       MKLDNNRNNForwardUnidi(state_outputs, 1, T, N, I, H, x_ptr, user_src_layer_memory_l,
           hx_ptr, cx_ptr, w_ptr, b_ptr, y_ptr, hy_ptr, cy_ptr, concat_weight_memory,
           concat_iter_memory, x_memory, x_memory_u8, hcx_memory, wx_memory, wx_memory_s8, wh_memory,
-          wh_memory_s8, bias_memory, y_memory, y_memory_u8, hcy_memory,rnn_forward_prim,
+          wh_memory_s8, bias_memory, y_memory, y_memory_u8, hcy_memory, rnn_forward_prim,
           0, L > 1 ? true : false, has_cache, dtype, mode);
     }
     if (L > 1) {
@@ -516,9 +510,9 @@ void MKLDNNRNNForwardINT8(bool state_outputs,
         w_size = (H + H) * H * ngates;
         MKLDNNRNNForwardUnidi(state_outputs, L - 1, T, N, H, H, tmpNull, user_src_layer_memory_l,
             hx_ptr, cx_ptr, w_ptr, b_ptr, y_ptr, hy_ptr, cy_ptr, concat_weight_memory,
-            concat_iter_memory, x_memory, x_memory_u8, hcx_memory, wx_memory, wx_memory_s8, wh_memory,
-            wh_memory_s8, bias_memory, y_memory, y_memory_u8, hcy_memory,rnn_forward_prim,
-            1, false, dtype, has_cache, mode);
+            concat_iter_memory, x_memory, x_memory_u8, hcx_memory, wx_memory, wx_memory_s8,
+            wh_memory, wh_memory_s8, bias_memory, y_memory, y_memory_u8, hcy_memory,
+            rnn_forward_prim, 1, false, has_cache, dtype, mode);
       }
     }
   }
@@ -555,7 +549,7 @@ void MKLDNNRNNForwardInferenceINT8(bool state_outputs,
                                    std::vector<mkldnn::memory> *y_memory_u8,
                                    std::vector<mkldnn::memory> *hcy_memory,
                                    std::vector<primitive> *rnn_forward_prim,
-                                   bool *has_cache;
+                                   bool *has_cache,
                                    int dtype,
                                    int mode) {
   switch (mode) {
@@ -784,7 +778,7 @@ static void RNNStatefulComputeCPU(const OpStatePtr& state_ptr,
             { src_layer_tz }, mkldnn_dtype, mkldnn::memory::format::tnc);
         auto user_src_layer_memory_n = mkldnn::memory({ user_src_layer_md, cpu_engine });
         op.x_memory.push_back(user_src_layer_memory_n);
-        
+
         mkldnn::memory::dims weights_layer_tz = {L, 1, I, ngates, H};  //  ldigo
         mkldnn::memory::dims weights_iter_tz = {L, 1, H, ngates, H};  //  ldigo
         mkldnn::memory::dims bias_tz = {L, 1, ngates, H};
@@ -946,7 +940,6 @@ static void RNNStatefulComputeCPU(const OpStatePtr& state_ptr,
             mkldnn::memory({ dst_iter_md_0, cpu_engine }, dst_iter_0);
         op.hcy_memory.push_back(dst_iter_memory_0);
         workptr = dst_iter_0 + D * nstates * N * H;
-        
 
         //  next L - 1 layers
         auto user_src_layer_md = mkldnn::memory::desc(
