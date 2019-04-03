@@ -206,7 +206,6 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
                            std::vector<mkldnn::memory> *y_memory_u8,
                            std::vector<mkldnn::memory> *hcy_memory,
                            std::vector<primitive> *rnn_forward_prim,
-                           std::vector<float> *weights_scales,
                            bool has_nextlayer,
                            int layer_index,
                            int dtype,
@@ -224,7 +223,7 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
   auto cpu_engine = CpuEngine::Get()->get_engine();
   auto null_memory_ = null_memory(cpu_engine);
   int offset1 = 0, offset2 = 0;
-  bool cached = weights_scales->size() == 0 ? false : true;
+  bool cached = false;
  
   const float data_shift = 64.;
   const float data_scale = 63.;
@@ -302,6 +301,7 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
   std::vector<void*> srcs_data_h;
   std::vector<mkldnn::memory::dims> src_l_dim_x;
   std::vector<mkldnn::memory::dims> src_l_dim_h;
+  std::vector<float> weights_scales(ngates * H);
   if (!cached) {    
     if (L == 1) {
       DType* wx = w_ptr;
@@ -313,10 +313,10 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
       DType* wx_tensor_data = wx_tensor.dptr_;
       DType* wh_tensor_data = wh_tensor.dptr_;
       #pragma omp parallel for num_threads(omp_threads)
-      for (int i = 0; i< ngates * H; i++ ) {
+      for (int i = 0; i< ngates * H; i++) {
         DType max_wx = getmax(wx_tensor_data + i * I, I);
         DType max_wh = getmax(wh_tensor_data + i * H, H);
-        (*weights_scales).push_back(data_scale/(max_wx > max_wh ? max_wx : max_wh));
+        weights_scales[i] = data_scale/(max_wx > max_wh ? max_wx : max_wh);
       }
 
     } else {
@@ -341,8 +341,8 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
         w_ptr = w_ptr + w_size;
       }
       #pragma omp parallel for num_threads(omp_threads)
-      for (int i = 0; i< ngates * H; i++ ) {
-        (*weights_scales).push_back(data_scale/getmax(tmp_max[i], L));
+      for (int i = 0; i< ngates * H; i++) {
+        weights_scales[i] = data_scale/getmax(tmp_max[i], L);
       }
       ConcatData(mkldnn::memory::format::ldgoi, mkldnn::memory::format::ldgoi,
           src_l_dim_x, weights_layer_tz, mkldnn_dtype, 0, srcs_data_x, src_wx_f);
@@ -377,7 +377,7 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
   primitive_attr attr;
   attr.set_int_output_round_mode(round_mode::round_nearest);
   attr.set_rnn_data_qparams(data_scale, data_shift);
-  attr.set_rnn_weights_qparams(weights_scale_mask, *weights_scales);
+  attr.set_rnn_weights_qparams(weights_scale_mask, weights_scales);
   std::vector<primitive> rnn_net;
   std::vector<primitive> weights_reorders;
 
@@ -518,7 +518,6 @@ void MKLDNNRNNForwardINT8(bool state_outputs,
                           std::vector<mkldnn::memory> *y_memory_u8,
                           std::vector<mkldnn::memory> *hcy_memory,
                           std::vector<primitive> *rnn_forward_prim,
-                          std::vector<float> *weights_scales,
                           int dtype,
                           int mode) {
   int ngates = 0, nstates = 0;
@@ -536,7 +535,7 @@ void MKLDNNRNNForwardINT8(bool state_outputs,
     MKLDNNRNNForwardUnidi(state_outputs, L, T, N, I, H, x_ptr, null_memory_,
         hx_ptr, cx_ptr, w_ptr, b_ptr, y_ptr, hy_ptr, cy_ptr, concat_weight_memory,
         concat_iter_memory, x_memory, x_memory_u8, hcx_memory, wx_memory, wx_memory_s8, wh_memory,
-        bias_memory, y_memory, y_memory_u8, hcy_memory, rnn_forward_prim, weights_scales,
+        bias_memory, y_memory, y_memory_u8, hcy_memory, rnn_forward_prim,
         0, false, dtype, mode);
   } else {
   }
@@ -571,7 +570,6 @@ void MKLDNNRNNForwardInferenceINT8(bool state_outputs,
                                    std::vector<mkldnn::memory> *y_memory_u8,
                                    std::vector<mkldnn::memory> *hcy_memory,
                                    std::vector<primitive> *rnn_forward_prim,
-                                   std::vector<float> *weights_scales,
                                    int dtype,
                                    int mode) {
   switch (mode) {
@@ -581,7 +579,7 @@ void MKLDNNRNNForwardInferenceINT8(bool state_outputs,
                                   cx_ptr, w_ptr, b_ptr, y_ptr, hy_ptr, cy_ptr,
                                   concat_weight_memory, concat_iter_memory, x_memory, x_memory_u8,
                                   hcx_memory, wx_memory, wx_memory_s8, wh_memory, bias_memory,
-                                  y_memory, y_memory_u8, hcy_memory, rnn_forward_prim, weights_scales,
+                                  y_memory, y_memory_u8, hcy_memory, rnn_forward_prim,
                                   dtype, mode);
       break;
     case rnn_enum::kGru:
@@ -688,7 +686,6 @@ class MKLDNNRNNOp {
                                            &y_memory_u8,
                                            &hcy_memory,
                                            &rnn_forward_prim,
-                                           &weights_scales,
                                            dtype,
                                            param_.mode);
     }
@@ -708,7 +705,6 @@ class MKLDNNRNNOp {
   std::vector<mkldnn::memory> y_memory;
   std::vector<mkldnn::memory> y_memory_u8;
   std::vector<mkldnn::memory> hcy_memory;
-  std::vector<float> weights_scales;
   bool init_mem_;
   size_t reserve_mem_size_;
   Storage::Handle mem_space_;
