@@ -45,12 +45,15 @@ def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req, rtol=1e-2, atol=1e
     mod2.bind(data_shapes=[('data', dshape)], label_shapes=None, inputs_need_grad=True, grad_req=grad_req)
 
     mod1.init_params()
+    #mod1.save_params('11.param')
+    #mod1.load_params('11.param')
     args, auxs = mod1.get_params()
     args = cell1.unpack_weights(args)
     args = cell2.pack_weights(args)
     mod2.set_params(args, auxs)
 
     x = mx.random.uniform(shape=dshape)
+    #x = mx.ndarray.ones(shape=dshape)
     batch=mx.io.DataBatch(data=[x])
     # check inference
     mod1.forward(batch, is_train=False)
