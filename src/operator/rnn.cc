@@ -245,7 +245,6 @@ The definition of GRU here is slightly different from paper but compatible with 
     // kOut, kStateOut, kStateCellOut
     num_outputs = (params.mode == rnn_enum::kLstm) ? 3 : 2;
   }
-
   return num_outputs;
 })
 .set_attr<nnvm::FListInputNames>("FListInputNames",

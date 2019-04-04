@@ -172,9 +172,11 @@ _init_op_module('mxnet', 'ndarray', _make_ndarray_function)
 # Note that we can only do this after the op module is initialized
 # Otherwise the backend operators cannot be found
 # pylint: disable=wrong-import-position
+'''
 from .contrib import adamw_update, mp_adamw_update
 from ._internal import _adamw_update, _mp_adamw_update
 adamw_update.__doc__ = _adamw_update.__doc__.replace("rescale_grad : NDArray",
                                                      "rescale_grad : NDArray or float")
 mp_adamw_update.__doc__ = _mp_adamw_update.__doc__.replace("rescale_grad : NDArray",
                                                            "rescale_grad : NDArray or float")
+'''
