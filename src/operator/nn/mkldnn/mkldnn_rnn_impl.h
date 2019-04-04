@@ -380,9 +380,12 @@ void MKLDNNRNNForwardSingleLayerBi(bool state_outputs,
   MKLDNNStream::Get()->RegisterPrim((*rnn_forward_prim)[layer_index]);
   MKLDNNStream::Get()->Submit();
   if (has_nextlayer) {
-    x_memory_u8->push_back((*y_memory_u8)[layer_index]);
+    if (lvalue == 1 || layer_index == 0) {
+      x_memory_u8->push_back((*y_memory_u8)[layer_index]);
+    } else {
+      (*x_memory_u8)[layer_index].set_data_handle((*y_memory_u8)[layer_index].get_data_handle());
+    }
   }
-
 
   if (state_outputs) {
     offset1 = nstates * single_cell_size;
@@ -782,7 +785,7 @@ void MKLDNNRNNForwardINT8(bool state_outputs,
       }
     }
   }
-  //*has_cache = true;
+  *has_cache = true;
 }
 
 template <typename DType>
@@ -1016,29 +1019,30 @@ static void RNNStatefulComputeCPU(const OpStatePtr& state_ptr,
     int H = param.state_size;
     int L = param.num_layers;
 
-    Tensor<cpu, 1, DType> w = in_blobs[rnn_enum::kParams].get<cpu, 1, DType>(s);
-    if (I == 1024) {
-      LOG(INFO) << "T:" << T << " D:" << D << " N:" << N << " I:" << I << " H:" << H << " L:" << L
-          << " w.dptr_[0]:" << w.dptr_[0];
-    }
-
     const size_t r_size = GetMKLDNNRNNCacheMemorySize(L, D, T, N, I, H, param.mode);
-
     if (op.init_mem_ && op.reserve_mem_size_ < r_size) {
       Storage::Get()->Free(op.mem_space_);
       op.init_mem_ = false;
     }
-
     if (!op.init_mem_) {
       op.mem_space_ = Storage::Get()->Alloc(
           r_size * sizeof(DType),
           Context::CPU());
       op.reserve_mem_size_ = r_size;
       op.init_mem_ = true;
+      op.has_cache = false;
     }
     if (op.has_cache && op.x_memory.size() == 0) {
       op.has_cache = false;
     }
+
+/*
+    Tensor<cpu, 1, DType> w = in_blobs[rnn_enum::kParams].get<cpu, 1, DType>(s);
+    if (I == 1024) {
+      LOG(INFO) << "T:" << T << " D:" << D << " N:" << N << " I:" << I << " H:" << H << " L:" << L
+          << " w.dptr_[0]:" << w.dptr_[0] << " op.has_cache:" << op.has_cache << " op.init_mem_:" << op.init_mem_;
+    }
+*/
     DType* workptr = static_cast<DType*>(op.mem_space_.dptr);
     mkldnn::memory::dims src_layer_tz_0 = {T, N, I};
     mkldnn::memory::dims src_layer_tz = {T, N, D * H};
