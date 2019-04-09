@@ -1038,14 +1038,11 @@ static void RNNStatefulComputeCPU(const OpStatePtr& state_ptr,
       op.has_cache = false;
     }
 
-/*
-    Tensor<cpu, 1, DType> w = in_blobs[rnn_enum::kParams].get<cpu, 1, DType>(s);
-    //if (I == 1024) {
+    /*Tensor<cpu, 1, DType> w = in_blobs[rnn_enum::kParams].get<cpu, 1, DType>(s);
+    if (I == 1024) {
       LOG(INFO) << "T:" << T << " D:" << D << " N:" << N << " I:" << I << " H:" << H << " L:" << L
           << " w.dptr_[0]:" << w.dptr_[0] << " op.has_cache:" << op.has_cache << " op:" << &op;
-    //}
-*/
-
+    }*/
     DType* workptr = static_cast<DType*>(op.mem_space_.dptr);
     mkldnn::memory::dims src_layer_tz_0 = {T, N, I};
     mkldnn::memory::dims src_layer_tz = {T, N, D * H};
