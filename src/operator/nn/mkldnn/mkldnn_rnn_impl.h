@@ -454,7 +454,26 @@ void MKLDNNRNNForwardUnidi(bool state_outputs,
   auto null_memory_ = null_memory(cpu_engine);
   int offset1 = 0, offset2 = 0;
   bool cached = *has_cache;
-
+/*
+  for (int i = 0; i< T * N * I ; i++) {
+     LOG(INFO) << "x_ptr[" << i << "]" << x_ptr[i];
+   }
+   for (int i = 0; i< N * H ; i++) {
+     LOG(INFO) << "hx_ptr[" << i << "]" << hx_ptr[i];
+   }
+   for (int i = 0; i< N * H ; i++) {
+     LOG(INFO) << "cx_ptr[" << i << "]" << cx_ptr[i];
+   }
+   for (int i = 0; i< I * ngates * H ; i++) {
+     LOG(INFO) << "wx_ptr[" << i << "]" << w_ptr[i];
+   }
+   for (int i = I * ngates * H; i< I * ngates * H + H * ngates * H ; i++) {
+     LOG(INFO) << "wh_ptr[" << i - I * ngates * H << "]" << w_ptr[i];
+   }
+   for (int i = 0; i< 2 * ngates * H ; i++) {
+     LOG(INFO) << "b_ptr[" << i << "]" << b_ptr[i];
+   }
+*/
   const float data_shift = 64.;
   const float data_scale = 63.;
 
