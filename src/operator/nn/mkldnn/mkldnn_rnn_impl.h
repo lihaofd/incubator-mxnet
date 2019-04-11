@@ -103,7 +103,7 @@ inline size_t GetMKLDNNRNNCacheMemorySize(int L,
     case rnn_enum::kLstm:
       size = 2 * (D * (I + H) * 4 * H + (L - 1) * D * (D * H + H) * 4 * H +
              L * D * 2 * N * H) + T * N * D * H + L * 2 * D * 4 * H + (L + 2) * D * 2 * N * H +
-             6 * D * (I + H + 2) * 4 * H + T * N * I * 2 + L * 4 * (H + I + 2) * 7 +
+             6 * D * (I + H + 2) * 4 * H + T * N * I * 2 +
              L * D * (D * H + H + 1) * 4 * H;
       break;
     case rnn_enum::kGru:
