@@ -50,7 +50,7 @@ static bool RNNShape(const nnvm::NodeAttrs& attrs,
       "Needed input:[data, parameters, state], got in_shape->size(): " << in_shape->size();
   }
   const TShape &dshape = (*in_shape)[rnn_enum::kData];
-  if (!mxnet::ndim_is_known(dshape)) return false;
+  if (dshape.ndim() ==  0) return false;
   CHECK_EQ(dshape.ndim(), 3U) \
       << "Input data should be rank-3 tensor of dim [sequence length, batch size, input size]";
   // data: [sequence len, batch, input dimension]
@@ -136,6 +136,20 @@ static bool RNNType(const nnvm::NodeAttrs& attrs,
       out_type->push_back(dtype);
   }
   return true;
+}
+
+inline static bool RNNStorageType(const nnvm::NodeAttrs& attrs,
+                                  const int dev_mask,
+                                  DispatchMode* dispatch_mode,
+                                  std::vector<int> *in_attrs,
+                                  std::vector<int> *out_attrs) {
+  DispatchMode wanted_mode = DispatchMode::kFCompute;
+  #if MXNET_USE_MKLDNN == 1
+    wanted_mode = DispatchMode::kFComputeEx;
+  #endif
+
+  return storage_type_assign(out_attrs, mxnet::kDefaultStorage,
+                             dispatch_mode, wanted_mode);
 }
 
 struct RNNGrad {
@@ -240,8 +254,12 @@ The definition of GRU here is slightly different from paper but compatible with 
 })
 .set_attr<mxnet::FInferShape>("FInferShape", RNNShape)
 .set_attr<nnvm::FInferType>("FInferType", RNNType)
+.set_attr<FInferStorageType>("FInferStorageType", RNNStorageType)
 .set_attr<FCreateOpState>("FCreateOpState", CreateRNNState)
 .set_attr<FStatefulCompute>("FStatefulCompute<cpu>", RNNStatefulCompute<cpu>)
+#if MXNET_USE_MKLDNN == 1
+.set_attr<FStatefulComputeEx>("FStatefulComputeEx<cpu>", RNNStatefulComputeCPU)
+#endif
 .set_attr<nnvm::FGradient>("FGradient", RNNGrad{"_backward_RNN"})
 .set_attr<FResourceRequestEx>("FResourceRequestEx",
   [](const NodeAttrs& attrs, const int dev_mask, const DispatchMode dispatch_mode) {
