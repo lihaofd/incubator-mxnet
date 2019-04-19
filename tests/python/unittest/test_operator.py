@@ -54,11 +54,13 @@ def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req, rtol=1e-2, atol=1e
 
     x = mx.random.uniform(shape=dshape)
     batch=mx.io.DataBatch(data=[x])
+
+    
     # check inference
     mod1.forward(batch, is_train=False)
     mod2.forward(batch, is_train=False)
     assert_allclose(mod1.get_outputs()[0].asnumpy(), mod2.get_outputs()[0].asnumpy(), rtol=rtol, atol=atol)
-
+    
     '''
     # check training
     mod1.forward(batch, is_train=True)
@@ -73,7 +75,7 @@ def check_rnn_consistency(cell1, cell2, T, N, I, H, grad_req, rtol=1e-2, atol=1e
     else:
         assert(mod1.get_input_grads()[0] == None)
         assert(mod2.get_input_grads()[0] == None)
-    '''
+    ''' 
 
 
 @with_seed()
